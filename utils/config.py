@@ -1,0 +1,10 @@
+# Configuration parameters
+NUM_LINKS = 4
+INPUT_SIZE = NUM_LINKS + 3  # Joint angles + 3D point
+HIDDEN_SIZE = 16              # 256
+OUTPUT_SIZE = NUM_LINKS
+NUM_LAYERS = 5
+
+NUM_EPOCHS = 500
+LEARNING_RATE = 0.0015
+BATCH_SIZE = 128
