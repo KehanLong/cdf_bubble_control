@@ -9,7 +9,7 @@ from training.train_sdf import train
 def main():
 
     # Load the saved dataset for each link
-    link_data = np.load(f'train_dataset/link1_sdf_data.npy', allow_pickle=True).item()
+    link_data = np.load(f'train_dataset/trailer_sdf_data.npy', allow_pickle=True).item()
     
     # Extract points and distances from the dataset
     points = link_data['points']

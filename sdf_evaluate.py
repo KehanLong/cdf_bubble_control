@@ -62,24 +62,37 @@ def main():
     # Load the trained models
     params_list = []
 
-    trained_params = jnp.load(f"trained_models/tractor_model_4_16.npy", allow_pickle=True).item()
-    params_list.append(trained_params)
+    # Load tractor model
+    tractor_params = jnp.load(f"trained_models/tractor_model_4_16.npy", allow_pickle=True).item()
+    params_list.append(tractor_params)
+
+    # Load trailer model
+    trailer_params = jnp.load(f"trained_models/trailer_model_4_16.npy", allow_pickle=True).item()
+    params_list.append(trailer_params)
     
     # Generate N points in the workspace
     n_points = 100
     points = generate_workspace_points(n_points)
 
+    # Define link lengths and widths for tractor and trailer
+    tractor_length = link_lengths[0]
+    tractor_width = link_widths[0]
     
-    # Evaluate the models for each link
-    link_length = link_lengths[0]
-    link_width = link_widths[0]
+    trailer_length = link_lengths[1]
+    trailer_width = link_widths[1]
     
-    # Evaluate the SDF model for the link
-    distances, gradients = evaluate_model(params_list[0], points)
+    # Evaluate the SDF model for the tractor
+    tractor_distances, tractor_gradients = evaluate_model(params_list[0], points)
     
-    # Visualize the SDF heatmap
-    title = f"Learned SDF for robot"
-    visualize_sdf_heatmap(link_length, link_width, points, distances, title)
+    # Evaluate the SDF model for the trailer
+    trailer_distances, trailer_gradients = evaluate_model(params_list[1], points)
+    
+    # Visualize the SDF heatmaps
+    title_tractor = f"Learned SDF for Tractor"
+    visualize_sdf_heatmap(tractor_length, tractor_width, points, tractor_distances, title_tractor)
+    
+    title_trailer = f"Learned SDF for Trailer"
+    visualize_sdf_heatmap(trailer_length, trailer_width, points, trailer_distances, title_trailer)
 
 if __name__ == "__main__":
     main()

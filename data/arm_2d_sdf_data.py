@@ -27,8 +27,8 @@ def visualize_training_data(dataset):
     ax.scatter(inside_points[:, 0], inside_points[:, 1], c='blue', marker='o', label='Inside')
     ax.scatter(outside_points[:, 0], outside_points[:, 1], c='red', marker='x', label='Outside')
     
-    ax.set_xlim(-2, 2)
-    ax.set_ylim(-2, 2)
+    ax.set_xlim(-3, 3)
+    ax.set_ylim(-3, 3)
     ax.set_aspect('equal')
     ax.set_title('Training Data')
     ax.legend()

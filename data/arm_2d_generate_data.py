@@ -72,7 +72,7 @@ def main():
 
    
     # Save the datasets
-    np.save('training_data_2d.npy', training_data)
+    np.save('training_data.npy', training_data)
 
 if __name__ == "__main__":
     main()
