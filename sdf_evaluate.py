@@ -1,9 +1,7 @@
-
 import jax
 import numpy as np
 import jax.numpy as jnp
 from utils.sdf_net import SDFNet
-from data.arm_2d_config import link_lengths, link_widths
 import matplotlib.pyplot as plt
 from utils.config import *
 
@@ -23,7 +21,7 @@ def evaluate_model(params, points):
 
     return outputs, gradients
 
-def visualize_sdf_heatmap(link_length, link_width, points, distances, title):
+def visualize_sdf_heatmap(points, distances, title):
     fig, ax = plt.subplots()
     # Reshape distances to match the grid shape
     n_points = int(jnp.sqrt(len(points)))
@@ -34,13 +32,11 @@ def visualize_sdf_heatmap(link_length, link_width, points, distances, title):
     
     # Plot the zero level set
     contour = ax.contour(points[:, 0].reshape(n_points, n_points), points[:, 1].reshape(n_points, n_points), distances, levels=[0], colors='black', linewidths=1)
+
     
-    # Plot the rectangle link
-    rect = plt.Rectangle((-link_length/2, -link_width/2), link_length, link_width, edgecolor='b', facecolor='none', linewidth=1)
-    ax.add_patch(rect)
     
-    ax.set_xlim(-5, 5)
-    ax.set_ylim(-5, 5)
+    ax.set_xlim(-1, 5)
+    ax.set_ylim(-3, 3)
     ax.set_aspect('equal')
     ax.set_title(title)
     
@@ -49,7 +45,6 @@ def visualize_sdf_heatmap(link_length, link_width, points, distances, title):
     cbar.set_label('Signed Distance')
     
     plt.show()
-
 
 def generate_workspace_points(n_points):
     x = np.linspace(-5, 5, n_points)
@@ -62,37 +57,35 @@ def main():
     # Load the trained models
     params_list = []
 
-    # Load tractor model
-    tractor_params = jnp.load(f"trained_models/tractor_model_4_16.npy", allow_pickle=True).item()
-    params_list.append(tractor_params)
-
-    # Load trailer model
-    trailer_params = jnp.load(f"trained_models/trailer_model_4_16.npy", allow_pickle=True).item()
-    params_list.append(trailer_params)
+    for i in range(5):  # Load all 5 link models
+        params = jnp.load(f"trained_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
+        params_list.append(params)
     
     # Generate N points in the workspace
     n_points = 100
     points = generate_workspace_points(n_points)
 
-    # Define link lengths and widths for tractor and trailer
-    tractor_length = link_lengths[0]
-    tractor_width = link_widths[0]
-    
-    trailer_length = link_lengths[1]
-    trailer_width = link_widths[1]
-    
-    # Evaluate the SDF model for the tractor
-    tractor_distances, tractor_gradients = evaluate_model(params_list[0], points)
-    
-    # Evaluate the SDF model for the trailer
-    trailer_distances, trailer_gradients = evaluate_model(params_list[1], points)
-    
-    # Visualize the SDF heatmaps
-    title_tractor = f"Learned SDF for Tractor"
-    visualize_sdf_heatmap(tractor_length, tractor_width, points, tractor_distances, title_tractor)
-    
-    title_trailer = f"Learned SDF for Trailer"
-    visualize_sdf_heatmap(trailer_length, trailer_width, points, trailer_distances, title_trailer)
+    # Evaluate and visualize SDF for each link
+    for i in range(5):
+        
+        # Evaluate the SDF model for the link
+        distances, gradients = evaluate_model(params_list[i], points)
+        
+        # Visualize the SDF heatmap
+        title = f"Learned SDF for Link {i+1}"
+        visualize_sdf_heatmap(points, distances, title)
+
+        # Load true SDF data
+        true_sdf_data = np.load(f'train_dataset/link{i+1}_sdf_data.npy', allow_pickle=True).item()
+        true_points = true_sdf_data['points']
+        true_distances = true_sdf_data['distances']
+
+        # Evaluate the model on the true points
+        predicted_distances, _ = evaluate_model(params_list[i], true_points)
+
+        # Compute MAE
+        mae = np.mean(np.abs(predicted_distances - true_distances))
+        print(f"Mean Absolute Error for Link {i+1}: {mae:.4f}")
 
 if __name__ == "__main__":
     main()

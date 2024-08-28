@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-from data.arm_2d_utils import RobotArm2D, sample_arm_points
+from arm_2d_utils import RobotArm2D, sample_arm_points
 from data.arm_2d_config import link_lengths, link_widths
 from scipy.spatial import ConvexHull
 

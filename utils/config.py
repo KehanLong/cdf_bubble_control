@@ -1,5 +1,5 @@
 # Configuration parameters
-NUM_LINKS = 4
+NUM_LINKS = 2
 INPUT_SIZE = NUM_LINKS + 3  # Joint angles + 3D point
 HIDDEN_SIZE = 16              # 256
 OUTPUT_SIZE = NUM_LINKS
