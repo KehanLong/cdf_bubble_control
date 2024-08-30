@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from arm_2d_utils import forward_kinematics, transform_shape
 from data.arm_2d_config import NUM_LINKS, shapes
 import random
@@ -79,8 +79,12 @@ def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
 
     return obstacles
 
-def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray):
-    fig, ax = plt.subplots(figsize=(10, 10))
+def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Optional[plt.Axes] = None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 10))
+        show_plot = True
+    else:
+        show_plot = False
 
     # Plot obstacles
     for obstacle in obstacles:
@@ -107,7 +111,8 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray):
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
 
-    plt.show()
+    if show_plot:
+        plt.show()
 
 def main():
 

@@ -3,6 +3,45 @@ from typing import List
 from utils_env import create_obstacles, plot_environment
 from cdf_evaluate import load_learned_cdf, cdf_evaluate_model
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import imageio
+
+def animate_path(obstacles: List[np.ndarray], planned_path: np.ndarray, fps: int = 10, duration: float = 5.0):
+    """
+    Create an animation of the robot arm moving along the planned path.
+    
+    Args:
+    obstacles (List[np.ndarray]): List of obstacle arrays.
+    planned_path (np.ndarray): Array of shape (n_steps, 5) containing the planned configurations.
+    fps (int): Frames per second for the animation.
+    duration (float): Duration of the animation in seconds.
+    
+    Returns:
+    None: Saves the animation as a video file.
+    """
+    n_frames = int(fps * duration)
+    path_indices = np.linspace(0, len(planned_path) - 1, n_frames, dtype=int)
+    
+    frames = []
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    for i in path_indices:
+        ax.clear()
+        config = planned_path[i]
+        plot_environment(obstacles, config, ax=ax)
+        ax.set_title(f"Step {i+1}/{len(planned_path)}")
+        
+        # Convert plot to image
+        fig.canvas.draw()
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
+        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        frames.append(image)
+    
+    plt.close(fig)
+    
+    # Save as video using imageio
+    imageio.mimsave('robot_arm_animation.mp4', frames, fps=fps)
+
 
 
 def config_to_cdf_input(angles: jnp.ndarray) -> jnp.ndarray:
@@ -43,15 +82,16 @@ def plan_path(obstacles: List[np.ndarray], initial_config: np.ndarray, goal_conf
 
 
     print("Path planning not yet implemented.")
-    return initial_config  # For now, just return the initial configuration
 
-
-
-
+    # For demonstration purposes, create a simple linear interpolation between initial and goal configs
+    n_steps = 100
+    planned_path = np.linspace(initial_config, goal_config, n_steps)
+  
+    return planned_path  # For now, return the planned_path 
 
 def main():
     # Load the CDF model
-    trained_model_path = "trained_models/cdf_models/cdf_model_5_256_distance.pt"  # # another model: "trained_models/cdf_models/cdf_model_5_256_eikonal.pt"
+    trained_model_path = "trained_models/cdf_models/cdf_model_5_256_distance.pt"  # Adjust path as needed
     jax_net, jax_params = load_learned_cdf(trained_model_path)
 
     # Create obstacles
@@ -65,13 +105,14 @@ def main():
     planned_path = plan_path(obstacles, initial_config, goal_config, jax_params)
 
     # Visualize the environment with the initial arm configuration
-    plot_environment(obstacles, initial_config)
-
+    animate_path(obstacles, planned_path)
 
 
     print(f"Initial configuration: {initial_config}")
     print(f"Goal configuration: {goal_config}")
-    print(f"Planned path: {planned_path}")
+    print(f"Planned path shape: {planned_path.shape}")
+    print("Animation saved as 'robot_arm_animation.mp4'")
+
 
 if __name__ == "__main__":
     main()
