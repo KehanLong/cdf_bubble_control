@@ -34,20 +34,32 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
             # Compute MSE loss
             mse_loss = torch.nn.functional.mse_loss(outputs, targets)
 
-            # Compute Eikonal loss
+            # Compute Eikonal loss for configuration gradients
             grad_outputs = torch.ones_like(outputs)
             gradients = torch.autograd.grad(outputs, inputs, grad_outputs=grad_outputs, create_graph=True)[0]
-            eikonal_loss = torch.mean(torch.abs(gradients.norm(2, dim=-1) - 1))
+            
+            # Extract gradients for the original 5 configuration parameters
+            config_gradients = gradients[:, :5]
+            eikonal_loss = torch.mean((config_gradients.norm(2, dim=-1) - 1)**2)
 
             # Compute Tension loss
             dd_gradients = torch.autograd.grad(gradients, inputs, grad_outputs=torch.ones_like(gradients), create_graph=True)[0]
             tension_loss = dd_gradients.square().sum(dim=-1).mean()
 
             # Combine losses
-            # w0, w1, w2 = 1.0, 0.01, 0.01  # Adjust these weights as needed
-            # loss = w0 * mse_loss + w1 * eikonal_loss + w2 * tension_loss
+            w0, w1, w2 = 1.0, 0.05, 0.01  # Adjust these weights as needed
+            loss = w0 * mse_loss + w1 * eikonal_loss  # Only including MSE and Eikonal for now
 
-            loss = mse_loss
+            # Print detailed loss information for the first batch of each epoch
+            # if epoch == 0 or (epoch + 1) % 10 == 0:
+            #     print(f"Epoch {epoch+1}, Batch 0:")
+            #     print(f"  MSE Loss: {mse_loss.item():.6f}")
+            #     print(f"  Eikonal Loss: {eikonal_loss.item():.6f}")
+            #     print(f"  Weighted MSE: {(w0 * mse_loss).item():.6f}")
+            #     print(f"  Weighted Eikonal: {(w1 * eikonal_loss).item():.6f}")
+            #     print(f"  Total Loss: {loss.item():.6f}")
+            #     print(f"  Gradients norm: {config_gradients.norm(2, dim=-1).mean().item():.6f}")
+
 
             # Backward pass and optimize
             loss.backward()
@@ -64,7 +76,7 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
         epoch_eikonal /= len(dataloader)
         epoch_tension /= len(dataloader)
 
-        if (epoch + 1) % 50 == 0:
+        if epoch == 1 or (epoch + 1) % 20 == 0:
             print(f"Epoch {epoch+1}/{num_epochs}: Loss: {epoch_loss:.4f}, MSE: {epoch_mse:.4f}, Eikonal: {epoch_eikonal:.4f}, Tension: {epoch_tension:.4f}")
 
         scheduler.step(epoch_loss)

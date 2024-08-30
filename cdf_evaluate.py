@@ -72,7 +72,7 @@ def cdf_evaluate_model(params, config, points):
     
     return cdf_values, gradients
 
-def visualize_arm_cdf(angles, jax_params, save_path='arm_cdf_visualization.png'):
+def visualize_arm_cdf(angles, jax_params, save_path='learned_cdf_visualization.png'):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
     
     # Generate points for CDF evaluation
@@ -125,12 +125,12 @@ def visualize_arm_cdf(angles, jax_params, save_path='arm_cdf_visualization.png')
     print(f"Figure saved as {save_path}")
 
 def main():
-    trained_model_path="trained_models/cdf_models/cdf_model_5_256_distance.pt"
+    trained_model_path="trained_models/cdf_models/cdf_model_5_256_distance.pt"  # or use cdf_model_5_256_eikonal.pt
     # Load the trained model and convert to JAX parameters
     jax_net, jax_params = load_learned_cdf(trained_model_path)
 
     # Set arm angles
-    angles = np.array([np.pi/2, -np.pi/4, 0, np.pi/3, -np.pi/4])
+    angles = np.array([-3*np.pi/4, 0, 0, 0, 0])
 
     # Visualize the arm CDF
     visualize_arm_cdf(angles, jax_params)
