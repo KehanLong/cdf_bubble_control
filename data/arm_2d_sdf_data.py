@@ -114,11 +114,11 @@ def main():
         visualize_training_data(dataset, shape_name)
 
         # Save the dataset for each link separately
-        # data = {
-        #     'points': points,
-        #     'distances': distances
-        # }
-        # np.save(f'link{i+1}_sdf_data.npy', data)
+        data = {
+            'points': points,
+            'distances': distances
+        }
+        np.save(f'link{i+1}_sdf_data.npy', data)
 
 if __name__ == "__main__":
     main()

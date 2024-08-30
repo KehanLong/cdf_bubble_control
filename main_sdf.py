@@ -16,7 +16,7 @@ def main():
 
     for i in range(num_links):
         # Load the saved dataset for each link
-        link_data = np.load(f'train_dataset/link{i+1}_sdf_data.npy', allow_pickle=True).item()
+        link_data = np.load(f'sdf_dataset/link{i+1}_sdf_data.npy', allow_pickle=True).item()
         
         # Extract points and distances from the dataset
         points = link_data['points']

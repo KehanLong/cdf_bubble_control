@@ -81,13 +81,16 @@ def forward_kinematics(angles):
 def calculate_arm_sdf(points, angles, params_list):
     """
     Calculate the signed distance from points to the robot arm using JAX.
+    Also returns the index of the link with the minimum distance.
     Args:
         points (array): (N, 2) array of (x, y) coordinates of points in the workspace,
                         or a single (2,) array for one point
         angles (list): List of joint angles
         params_list (list): List of learned network parameters for each link
     Returns:
-        array: Minimum signed distances from the points to the whole robot arm
+        tuple: (min_distances, min_link_indices)
+            - min_distances: Minimum signed distances from the points to the whole robot arm
+            - min_link_indices: Indices of the links with the minimum distance for each point
     """
     # Ensure points is always a 2D array
     points = jnp.atleast_2d(points)
@@ -95,6 +98,7 @@ def calculate_arm_sdf(points, angles, params_list):
     joint_positions = forward_kinematics(angles)
     points_3d = jnp.pad(points, ((0, 0), (0, 1)))  # Convert to 3D points
     min_distances = jnp.full(points.shape[0], jnp.inf)
+    min_link_indices = jnp.full(points.shape[0], -1, dtype=jnp.int32)
     current_angle = 0.0
 
     for i in range(NUM_LINKS):
@@ -109,20 +113,28 @@ def calculate_arm_sdf(points, angles, params_list):
 
         # Evaluate the SDF model for the link
         distances, _ = evaluate_model(params, local_points)
+        distances = distances.squeeze()
 
-        # Update minimum distances
-        min_distances = jnp.minimum(min_distances, distances.squeeze())
+        # Update minimum distances and link indices
+        update_mask = distances < min_distances
+        min_distances = jnp.where(update_mask, distances, min_distances)
+        min_link_indices = jnp.where(update_mask, i, min_link_indices)
 
-    # If input was a single point, return a scalar
-    return min_distances[0] if points.shape[0] == 1 else min_distances
+    # If input was a single point, return scalars
+    if points.shape[0] == 1:
+        return min_distances[0], min_link_indices[0]
+    else:
+        return min_distances, min_link_indices
 
 @jax.jit
 def calculate_arm_sdf_with_grad(point, angles, params_list):
     def sdf_func(angles):
-        return calculate_arm_sdf(point, angles, params_list)
+        sdf_value, _ = calculate_arm_sdf(point, angles, params_list)
+        return sdf_value
     
     sdf_value, gradient = jax.value_and_grad(sdf_func)(angles)
-    return sdf_value, gradient
+    _, link_index = calculate_arm_sdf(point, angles, params_list)
+    return sdf_value, gradient, link_index
 
 def visualize_arm_sdf(angles, params_list, save_path='arm_sdf_visualization.png'):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
@@ -135,7 +147,7 @@ def visualize_arm_sdf(angles, params_list, save_path='arm_sdf_visualization.png'
     points = np.stack((xx.flatten(), yy.flatten()), axis=-1)
     
     # Calculate SDF for all points at once
-    distances = calculate_arm_sdf(points, angles, params_list)
+    distances, _ = calculate_arm_sdf(points, angles, params_list)
     distances = distances.reshape(n_points, n_points)
 
     heatmap = ax.imshow(distances, cmap='coolwarm', extent=[-20, 20, -20, 20], origin='lower', aspect='equal', vmin=-2, vmax=15)
@@ -181,7 +193,7 @@ def test_calculate_arm_sdf_with_grad(params_list):
         print(f"Point: {point}, Angles: {angles}")
 
         # Calculate SDF and gradient
-        sdf_value, gradient = calculate_arm_sdf_with_grad(point, angles, params_list)
+        sdf_value, gradient, _ = calculate_arm_sdf_with_grad(point, angles, params_list)
 
         print(f"SDF value: {sdf_value}")
         print(f"Gradient: {gradient}")
@@ -194,8 +206,8 @@ def test_calculate_arm_sdf_with_grad(params_list):
             angles_plus = angles.at[j].add(epsilon)
             angles_minus = angles.at[j].add(-epsilon)
 
-            sdf_plus = calculate_arm_sdf(point, angles_plus, params_list)
-            sdf_minus = calculate_arm_sdf(point, angles_minus, params_list)
+            sdf_plus, _ = calculate_arm_sdf(point, angles_plus, params_list)
+            sdf_minus, _ = calculate_arm_sdf(point, angles_minus, params_list)
 
             numerical_grad = (sdf_plus - sdf_minus) / (2 * epsilon)
             numerical_gradient.append(numerical_grad)
@@ -217,13 +229,13 @@ def main():
     
     params_list = []
     for i in range(NUM_LINKS):
-        params = jnp.load(f"trained_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
+        params = jnp.load(f"trained_models/sdf_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
         params_list.append(params)
     
     visualize_arm_sdf(angles, params_list)
 
     # Add this line to run the test function
-    # test_calculate_arm_sdf_with_grad(params_list)
+    test_calculate_arm_sdf_with_grad(params_list)
 
 if __name__ == "__main__":
     main()
