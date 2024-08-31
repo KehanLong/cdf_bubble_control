@@ -91,7 +91,7 @@ def plan_path(obstacles: List[np.ndarray], initial_config: np.ndarray, goal_conf
 
 def main():
     # Load the CDF model
-    trained_model_path = "trained_models/cdf_models/cdf_model_5_256_distance.pt"  # Adjust path as needed
+    trained_model_path = "trained_models/cdf_models/cdf_model_5_256_with_surface.pt"  # Adjust path as needed
     jax_net, jax_params = load_learned_cdf(trained_model_path)
 
     # Create obstacles
@@ -100,6 +100,17 @@ def main():
     # Set initial and goal configurations
     initial_config = np.array([0, 0, 0, 0, 0])
     goal_config = np.array([np.pi/2, np.pi/4, -np.pi/4, 0, 0])
+
+
+    # Check CDF values for specific obstacle points
+    test_points = np.array([[4, 1], [2, 1], [10, 1]])
+    config_input = config_to_cdf_input(initial_config)
+    cdf_values, _ = cdf_evaluate_model(jax_params, config_input, test_points)
+    
+    print("CDF values for specific obstacle points:")
+    for point, cdf_value in zip(test_points, cdf_values):
+        print(f"Point {point}: CDF value = {cdf_value}")
+
 
     # Plan path
     planned_path = plan_path(obstacles, initial_config, goal_config, jax_params)

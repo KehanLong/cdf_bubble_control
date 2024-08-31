@@ -1,7 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from arm_2d_utils import forward_kinematics, transform_shape
+from arm_2d_utils import forward_kinematics, transform_shape, generate_robot_point_cloud
 from arm_2d_cdf import find_closest_zero_config
 from data.arm_2d_config import shapes, NUM_LINKS
 import os
@@ -36,11 +36,40 @@ def compute_cdf_values(configs, points, params_list):
     
     return cdf_values
 
-def visualize_dataset_sample(configs, points, cdf_values, sample_idx, save_path='dataset_sample_visualization.png'):
+
+def compute_cdf_values_with_surface_points(configs, points, params_list, num_points_per_link=200):
+    """Compute CDF values for all configurations and points, including surface points."""
+    
+    # Compute CDF values for workspace points
+    workspace_cdf_values = compute_cdf_values(configs, points, params_list)
+    
+    # Generate surface points for all configurations
+    surface_points_list = [generate_robot_point_cloud(config, num_points_per_link) for config in configs]
+    
+    # All configurations have the same number of surface points
+    num_surface_points = len(surface_points_list[0])
+    total_points = len(points) + num_surface_points
+    
+    # Prepare arrays for all points and CDF values
+    all_points = np.zeros((len(configs), total_points, 2))
+    cdf_values = np.zeros((len(configs), total_points))
+    
+    for i, surface_points in enumerate(surface_points_list):
+        # Combine workspace points and surface points
+        all_points[i] = np.vstack([points, surface_points])
+        
+        # Store CDF values (workspace CDF values + zeros for surface points)
+        cdf_values[i, :len(points)] = workspace_cdf_values[i]
+        # Surface points already have CDF value 0, so we don't need to set them explicitly
+    
+    return all_points, cdf_values
+
+def visualize_dataset_sample(configs, all_points, cdf_values, sample_idx, save_path='dataset_sample_visualization.png'):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
     
     # Get the configuration and all points for this sample
     config = configs[sample_idx]
+    points = all_points[sample_idx]
     
     # Create scatter plot
     scatter = ax.scatter(points[:, 0], points[:, 1], c=cdf_values[sample_idx], cmap='viridis', s=10, vmin=0, vmax=2)
@@ -74,32 +103,32 @@ def main():
     # Load parameters
     params_list = []
     for i in range(NUM_LINKS):
-        params = jnp.load(f"trained_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
+        params = jnp.load(f"trained_models/sdf_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
         params_list.append(params)
 
     # Generate data
     num_configs = 150
     num_points = 2000
+    num_surface_points_link = 100
 
     configs = generate_robot_configurations(num_configs)
-    points = generate_workspace_points(num_points)
-    cdf_values = compute_cdf_values(configs, points, params_list)
+    workspace_points = generate_workspace_points(num_points)
+    all_points, cdf_values = compute_cdf_values_with_surface_points(configs, workspace_points, params_list, num_points_per_link=num_surface_points_link)
 
     # Save data
     os.makedirs('cdf_dataset', exist_ok=True)
     data = {
         'configurations': configs,
-        'points': points,
+        'points': all_points,
         'cdf_values': cdf_values
     }
-    np.save('cdf_dataset/robot_cdf_dataset.npy', data)
+    np.save('cdf_dataset/robot_cdf_dataset_with_surface.npy', data)
 
-    print("Data generation complete. File saved as 'cdf_dataset/robot_cdf_dataset.npy'.")
+    print("Data generation complete. File saved as 'cdf_dataset/robot_cdf_dataset_with_surface.npy'.")
 
     # Visualize a sample from the dataset
     random_sample_idx = np.random.randint(0, num_configs)
-    visualize_dataset_sample(configs, points, cdf_values, sample_idx=random_sample_idx, save_path='cdf_dataset/dataset_sample_visualization.png')
-
+    visualize_dataset_sample(configs, all_points, cdf_values, sample_idx=random_sample_idx, save_path='cdf_dataset/dataset_sample_visualization_with_surface.png')
 
 if __name__ == "__main__":
     main()

@@ -68,6 +68,7 @@ def find_zero_sdf_angles(point, initial_angles_batch, params_list, num_attempts=
     for i, angles in enumerate(initial_angles_batch):
         all_initial_angles = all_initial_angles.at[i].set(jnp.array(angles))
 
+
     # Flatten the batch of initial angles
     flat_initial_angles = all_initial_angles.reshape(-1)
 
@@ -99,19 +100,20 @@ def find_zero_sdf_angles(point, initial_angles_batch, params_list, num_attempts=
     optimized_angles = result.x.reshape(num_attempts, NUM_LINKS)
 
     # Compute final SDF values
-    final_sdf_values, _ = vmap(lambda angles: calculate_arm_sdf(jnp.array([point]), angles, params_list))(optimized_angles)
+    final_sdf_values, touching_links = vmap(lambda angles: calculate_arm_sdf(jnp.array([point]), angles, params_list))(optimized_angles)
+
 
     # Filter results
     mask = jnp.abs(final_sdf_values) < tolerance
     zero_configs = optimized_angles[mask]
+    touching_links = touching_links[mask]
     
     if len(zero_configs) == 0:
-        # print("No zero-level set configurations found.")
+        print(f"No zero-level set configurations found. Closest SDF: {jnp.min(jnp.abs(final_sdf_values)):.6f}")
         return jnp.array([]), jnp.array([])
     
-    # Compute touching links only for valid configurations
-    _, touching_links = vmap(lambda angles: calculate_arm_sdf(jnp.array([point]), angles, params_list))(zero_configs)
     touching_links = touching_links + 1  # Add 1 because link indices are 1-based
+
 
     return zero_configs, touching_links
 
@@ -276,7 +278,7 @@ def main():
 
     # Test points
     test_points = [
-        np.array([5.0, 7.0]),
+        np.array([10.0, 1.0]),
         np.array([-1.0, 4.0]),
         np.array([-4., -12.0]),
         np.array([8.0, -12.0]),
@@ -284,9 +286,9 @@ def main():
 
     # Batch of initial configurations
     initial_q_batch = np.array([
-        [0, 0, 0, 0, 0],
-        [np.pi/4, -np.pi/4, np.pi/4, -np.pi/4, 0],
-        [-np.pi/4, np.pi/4, -np.pi/4, np.pi/4, 0]
+        [0, 0, 0, 0, 0]
+        # [np.pi/4, -np.pi/4, np.pi/4, -np.pi/4, 0],
+        # [-np.pi/4, np.pi/4, -np.pi/4, np.pi/4, 0]
     ])
 
     for i, point in enumerate(test_points):

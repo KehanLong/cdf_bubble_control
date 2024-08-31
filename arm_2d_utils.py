@@ -76,7 +76,6 @@ def forward_kinematics(angles):
     _, _, joint_positions = jax.lax.fori_loop(0, NUM_LINKS, body_fn, carry)
     return joint_positions
 
-
 @jax.jit
 def calculate_arm_sdf(points, angles, params_list):
     """
@@ -136,6 +135,53 @@ def calculate_arm_sdf_with_grad(point, angles, params_list):
     _, link_index = calculate_arm_sdf(point, angles, params_list)
     return sdf_value, gradient, link_index
 
+
+def generate_link_points(shape_points, angle, translation, num_points):
+    # Transform the shape points
+    cos_angle, sin_angle = jnp.cos(angle), jnp.sin(angle)
+    rotation_matrix = jnp.array([[cos_angle, -sin_angle], [sin_angle, cos_angle]])
+    rotated_shape = jnp.dot(shape_points, rotation_matrix.T)
+    transformed_shape = rotated_shape + translation
+    
+    edge_lengths = jnp.array([jnp.linalg.norm(transformed_shape[i] - transformed_shape[(i+1) % len(transformed_shape)]) 
+                              for i in range(len(transformed_shape))])
+    total_length = jnp.sum(edge_lengths)
+    points_per_edge = jnp.maximum(1, (num_points * edge_lengths / total_length).astype(jnp.int32))
+    
+    # Fix: Ensure the total number of points is exactly num_points
+    points_diff = num_points - jnp.sum(points_per_edge)
+    points_per_edge = points_per_edge.at[jnp.argmax(edge_lengths)].add(points_diff)
+    
+    link_points = []
+    for i in range(len(transformed_shape)):
+        start = transformed_shape[i]
+        end = transformed_shape[(i+1) % len(transformed_shape)]
+        t = jnp.linspace(0, 1, points_per_edge[i])
+        edge_samples = jnp.outer(1-t, start) + jnp.outer(t, end)
+        link_points.append(edge_samples)
+    
+    return jnp.concatenate(link_points)
+
+def generate_robot_point_cloud(angles, num_points_per_link=100):
+    joint_positions = forward_kinematics(angles)
+    
+    cumulative_angles = jnp.cumsum(angles)
+    
+    point_cloud = []
+    for i in range(NUM_LINKS):
+        _, shape = shapes[i]
+        link_points = generate_link_points(
+            jnp.array(shape),
+            cumulative_angles[i],
+            joint_positions[i],
+            num_points_per_link
+        )
+        point_cloud.append(link_points)
+    
+    return jnp.concatenate(point_cloud)
+
+    
+
 def visualize_arm_sdf(angles, params_list, save_path='arm_sdf_visualization.png'):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
     
@@ -156,6 +202,10 @@ def visualize_arm_sdf(angles, params_list, save_path='arm_sdf_visualization.png'
     joint_positions = forward_kinematics(angles)
     current_angle = 0
     
+    # Generate and plot robot point cloud
+    robot_points = generate_robot_point_cloud(angles)
+    ax.scatter(robot_points[:, 0], robot_points[:, 1], color='red', s=1, alpha=0.5, label='Robot Surface')
+    
     for i, ((shape_name, shape_points), joint_pos) in enumerate(zip(shapes[:NUM_LINKS], joint_positions)):
         if i < len(angles):
             current_angle += angles[i]
@@ -172,6 +222,7 @@ def visualize_arm_sdf(angles, params_list, save_path='arm_sdf_visualization.png'
     cbar = fig.colorbar(heatmap, ax=ax)
     cbar.set_label('Signed Distance')
     
+    ax.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -226,6 +277,7 @@ def test_calculate_arm_sdf_with_grad(params_list):
 
 def main():
     angles = jnp.array([np.pi/2, -np.pi/4, 0, np.pi/3 ,-np.pi/4])
+    # angles = jnp.array([0, 0, 0, 0, 0])
     
     params_list = []
     for i in range(NUM_LINKS):
@@ -235,7 +287,9 @@ def main():
     visualize_arm_sdf(angles, params_list)
 
     # Add this line to run the test function
-    test_calculate_arm_sdf_with_grad(params_list)
+    # test_calculate_arm_sdf_with_grad(params_list)
+
+
 
 if __name__ == "__main__":
     main()
