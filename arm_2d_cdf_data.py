@@ -18,7 +18,7 @@ def generate_robot_configurations(num_configs):
         configs.append(config)
     return np.array(configs)
 
-def generate_workspace_points(num_points, radius=19):
+def generate_workspace_points(num_points, radius=8):
     """Generate random points within a disk."""
     r = radius * np.sqrt(np.random.random(num_points))
     theta = np.random.uniform(0, 2*np.pi, num_points)
@@ -107,12 +107,16 @@ def main():
         params_list.append(params)
 
     # Generate data
-    num_configs = 150
-    num_points = 2000
+    num_configs = 100
+    num_points = 1000
     num_surface_points_link = 100
 
     configs = generate_robot_configurations(num_configs)
-    workspace_points = generate_workspace_points(num_points)
+    if NUM_LINKS == 2:
+        radius = 8
+    if NUM_LINKS == 5:
+        radius = 19
+    workspace_points = generate_workspace_points(num_points, radius)
     all_points, cdf_values = compute_cdf_values_with_surface_points(configs, workspace_points, params_list, num_points_per_link=num_surface_points_link)
 
     # Save data
@@ -122,13 +126,13 @@ def main():
         'points': all_points,
         'cdf_values': cdf_values
     }
-    np.save('cdf_dataset/robot_cdf_dataset_with_surface.npy', data)
+    np.save('cdf_dataset/robot_cdf_dataset_2_links.npy', data)
 
-    print("Data generation complete. File saved as 'cdf_dataset/robot_cdf_dataset_with_surface.npy'.")
+    print("Data generation complete. File saved as 'cdf_dataset/robot_cdf_dataset_2_links.npy'.")
 
     # Visualize a sample from the dataset
     random_sample_idx = np.random.randint(0, num_configs)
-    visualize_dataset_sample(configs, all_points, cdf_values, sample_idx=random_sample_idx, save_path='cdf_dataset/dataset_sample_visualization_with_surface.png')
+    visualize_dataset_sample(configs, all_points, cdf_values, sample_idx=random_sample_idx, save_path='cdf_dataset/dataset_sample_visualization_2_links.png')
 
 if __name__ == "__main__":
     main()

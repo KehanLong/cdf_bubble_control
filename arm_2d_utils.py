@@ -276,8 +276,8 @@ def test_calculate_arm_sdf_with_grad(params_list):
             print("Gradient check failed. The implementation might be incorrect.")
 
 def main():
-    angles = jnp.array([np.pi/2, -np.pi/4, 0, np.pi/3 ,-np.pi/4])
-    # angles = jnp.array([0, 0, 0, 0, 0])
+    # angles = jnp.array([np.pi/2, -np.pi/4, 0, np.pi/3 ,-np.pi/4])
+    angles = jnp.array([0, 0])
     
     params_list = []
     for i in range(NUM_LINKS):

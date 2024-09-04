@@ -49,15 +49,16 @@ def config_to_cdf_input(angles: jnp.ndarray) -> jnp.ndarray:
     Convert arm configuration angles to the input format required by cdf_evaluate_model.
     
     Args:
-    angles (jnp.ndarray): Array of 5 joint angles.
+    angles (jnp.ndarray): Array of joint angles.
     
     Returns:
     jnp.ndarray: Formatted input for cdf_evaluate_model.
     """
-    return jnp.array([
-        angles[0], angles[1], angles[2], angles[3], angles[4],
-        jnp.sin(angles[0]), jnp.sin(angles[1]), jnp.sin(angles[2]), jnp.sin(angles[3]), jnp.sin(angles[4]),
-        jnp.cos(angles[0]), jnp.cos(angles[1]), jnp.cos(angles[2]), jnp.cos(angles[3]), jnp.cos(angles[4])
+    num_angles = angles.shape[0]
+    return jnp.concatenate([
+        angles,
+        jnp.sin(angles),
+        jnp.cos(angles)
     ])
 
 def concatenate_obstacle_list(obstacle_list):
@@ -91,19 +92,19 @@ def plan_path(obstacles: List[np.ndarray], initial_config: np.ndarray, goal_conf
 
 def main():
     # Load the CDF model
-    trained_model_path = "trained_models/cdf_models/cdf_model_5_256_with_surface.pt"  # Adjust path as needed
+    trained_model_path = "trained_models/cdf_models/cdf_model_4_256_2_links.pt"  # Adjust path as needed
     jax_net, jax_params = load_learned_cdf(trained_model_path)
 
     # Create obstacles
     obstacles = create_obstacles()
 
     # Set initial and goal configurations
-    initial_config = np.array([0, 0, 0, 0, 0])
-    goal_config = np.array([np.pi/2, np.pi/4, -np.pi/4, 0, 0])
+    initial_config = np.array([0, 0])
+    goal_config = np.array([np.pi/2, np.pi/4])
 
 
     # Check CDF values for specific obstacle points
-    test_points = np.array([[4, 1], [2, 1], [10, 1]])
+    test_points = np.array([[4, 1], [2, 1], [-4, 1]])
     config_input = config_to_cdf_input(initial_config)
     cdf_values, _ = cdf_evaluate_model(jax_params, config_input, test_points)
     

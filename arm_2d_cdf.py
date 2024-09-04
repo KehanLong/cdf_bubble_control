@@ -109,7 +109,7 @@ def find_zero_sdf_angles(point, initial_angles_batch, params_list, num_attempts=
     touching_links = touching_links[mask]
     
     if len(zero_configs) == 0:
-        print(f"No zero-level set configurations found. Closest SDF: {jnp.min(jnp.abs(final_sdf_values)):.6f}")
+        # print(f"No zero-level set configurations found. Closest SDF: {jnp.min(jnp.abs(final_sdf_values)):.6f}")
         return jnp.array([]), jnp.array([])
     
     touching_links = touching_links + 1  # Add 1 because link indices are 1-based
@@ -123,6 +123,8 @@ def compute_cdf_batch(q_batch, zero_config, touching_link):
     """
     Compute the CDF value as the Euclidean distance between partial configurations for a batch of q.
     """
+    q_batch = np.atleast_2d(q_batch)
+    zero_config = np.atleast_1d(zero_config)
     return np.linalg.norm(q_batch[:, :touching_link] - zero_config[:touching_link], axis=1)
 
 def compute_cdf_gradient(q, zero_configs):
@@ -152,9 +154,10 @@ def compute_cdf_gradient(q, zero_configs):
 def find_closest_zero_config(point, initial_q_batch, params_list):
     """
     Find the closest zero-level-set configuration for a given point,
-    using a batch of initial configurations.
+    using a batch of initial configurations or a single configuration.
     Returns batches of closest configurations, CDF values, and touching links.
     """
+    initial_q_batch = np.atleast_2d(initial_q_batch)
     zero_configs, touching_links = find_zero_sdf_angles(point, initial_q_batch, params_list)
     
     if len(zero_configs) == 0:
@@ -167,7 +170,7 @@ def find_closest_zero_config(point, initial_q_batch, params_list):
     for initial_q in initial_q_batch:
         initial_cdf_values = []
         for zero_config, touching_link in zip(zero_configs, touching_links):
-            cdf_value = compute_cdf_batch(np.array([initial_q]), zero_config, touching_link)[0]
+            cdf_value = compute_cdf_batch(initial_q, zero_config, touching_link)[0]
             initial_cdf_values.append(cdf_value)
         
         min_index = np.argmin(initial_cdf_values)
@@ -214,9 +217,18 @@ def visualize_arm_cdf(angles, params_list, save_path='arm_cdf_visualization.png'
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
     
     # Generate points for CDF evaluation
+    # 5 links version: 
+    # n_points = 100
+    # xy_bound_box = 20
+    # x = np.linspace(-xy_bound_box, xy_bound_box, n_points)
+    # y = np.linspace(-xy_bound_box, xy_bound_box, n_points)
+
+    # 2 links version: 
     n_points = 100
-    x = np.linspace(-20, 20, n_points)
-    y = np.linspace(-20, 20, n_points)
+    xy_bound_box = 9
+    x = np.linspace(-xy_bound_box, xy_bound_box, n_points)
+    y = np.linspace(-xy_bound_box, xy_bound_box, n_points)
+
     xx, yy = np.meshgrid(x, y)
     points = np.stack((xx.flatten(), yy.flatten()), axis=-1)
     
@@ -227,6 +239,11 @@ def visualize_arm_cdf(angles, params_list, save_path='arm_cdf_visualization.png'
     
     for i, point in enumerate(points):
         _, cdf_value, _ = find_closest_zero_config(point, angles, params_list)
+        if cdf_value is None or len(cdf_value) == 0:
+            cdf_value = float('inf')  # Use infinity for unreachable points
+        else:
+            cdf_value = float(cdf_value[0])  # Convert to scalar float
+        
         if i % 100 == 0 and i > 0:
             current_time = time.time()
             elapsed_time = current_time - last_print_time
@@ -240,7 +257,7 @@ def visualize_arm_cdf(angles, params_list, save_path='arm_cdf_visualization.png'
     cdf_values = np.array(cdf_values).reshape(n_points, n_points)
 
     # Create heatmap
-    heatmap = ax.imshow(cdf_values, cmap='viridis', extent=[-20, 20, -20, 20], origin='lower', aspect='equal', vmin=-2, vmax=2)
+    heatmap = ax.imshow(cdf_values, cmap='viridis', extent=[-xy_bound_box, xy_bound_box, -xy_bound_box, xy_bound_box], origin='lower', aspect='equal', vmin=-0.5, vmax=5)
     
     # Plot robot arm
     joint_positions = forward_kinematics(angles)
@@ -269,8 +286,11 @@ def visualize_arm_cdf(angles, params_list, save_path='arm_cdf_visualization.png'
 
     
 def main():
-    # Load parameters
-    angles = np.array([np.pi/2, -np.pi/4, 0, np.pi/3 ,-np.pi/4])
+    # 5 links version: 
+    # angles = np.array([np.pi/2, -np.pi/4, 0, np.pi/3 ,-np.pi/4])
+
+    # 2 links version: 
+    angles = np.array([np.pi/2, -np.pi/4])
     params_list = []
     for i in range(NUM_LINKS):
         params = np.load(f"trained_models/sdf_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
@@ -278,15 +298,15 @@ def main():
 
     # Test points
     test_points = [
-        np.array([10.0, 1.0]),
+        np.array([7.0, 3.0]),
         np.array([-1.0, 4.0]),
-        np.array([-4., -12.0]),
-        np.array([8.0, -12.0]),
+        np.array([-4., -6.0]),
+        np.array([4.0, -3.0]),
     ]
 
     # Batch of initial configurations
     initial_q_batch = np.array([
-        [0, 0, 0, 0, 0]
+        [0, 0]
         # [np.pi/4, -np.pi/4, np.pi/4, -np.pi/4, 0],
         # [-np.pi/4, np.pi/4, -np.pi/4, np.pi/4, 0]
     ])
@@ -311,7 +331,7 @@ def main():
         else:
             print("No zero-level-set configurations found.")
 
-    # visualize_arm_cdf(angles, params_list)
+    visualize_arm_cdf(angles, params_list)
 
 if __name__ == "__main__":
     main()

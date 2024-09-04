@@ -1,9 +1,9 @@
 # Configuration parameters
-NUM_LINKS = 5
+NUM_LINKS = 2
 INPUT_SIZE = NUM_LINKS * 3 + 2  # Joint angles + 2D point
 HIDDEN_SIZE = 256             # 256
 OUTPUT_SIZE = 1
-NUM_LAYERS = 6  # 5 hidden layers
+NUM_LAYERS = 5  # 5 hidden layers
 
 NUM_EPOCHS = 500
 LEARNING_RATE = 0.0015

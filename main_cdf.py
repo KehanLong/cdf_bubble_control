@@ -40,14 +40,14 @@ def preprocess_data(configurations, points, cdf_values):
 
 def main():
     # Configuration
-    input_size = 17  # 5 joints + 5 sin + 5 cos + 2 point coordinates
-    mlp_layers = [256, 256, 256, 256, 256]
+    input_size = 2 * 3 + 2  # 5 joints + 5 sin + 5 cos + 2 point coordinates
+    mlp_layers = [256, 256, 256, 256]
     num_epochs = 500
     learning_rate = 0.001
     batch_size = 256
 
     # Load the dataset
-    data = np.load('cdf_dataset/robot_cdf_dataset_with_surface.npy', allow_pickle=True).item()
+    data = np.load('cdf_dataset/robot_cdf_dataset_2_links.npy', allow_pickle=True).item()
     configurations = data['configurations']
     points = data['points']
     cdf_values = data['cdf_values']
@@ -82,7 +82,7 @@ def main():
     trained_model = train(net, dataset, num_epochs=num_epochs, learning_rate=learning_rate, batch_size=batch_size, device=device)
 
     # Save the trained model parameters
-    torch.save(trained_model.state_dict(), f"trained_models/cdf_models/cdf_model_{len(mlp_layers)}_{mlp_layers[0]}_with_surface.pt")
+    torch.save(trained_model.state_dict(), f"trained_models/cdf_models/cdf_model_{len(mlp_layers)}_{mlp_layers[0]}_2_links.pt")
     print("Saved trained CDF model")
 
 if __name__ == "__main__":
