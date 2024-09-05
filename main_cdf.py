@@ -37,13 +37,17 @@ def preprocess_data(configurations, points, cdf_values):
 
     return filtered_configs, filtered_points, filtered_cdf_values
 
+def data_checksum(configurations, points, cdf_values):
+    return (np.sum(configurations), np.sum(points), np.sum(cdf_values))
+
+
 
 def main():
     # Configuration
     input_size = 2 * 3 + 2  # 5 joints + 5 sin + 5 cos + 2 point coordinates
     mlp_layers = [256, 256, 256, 256]
     num_epochs = 500
-    learning_rate = 0.001
+    learning_rate = 0.003
     batch_size = 256
 
     # Load the dataset
@@ -66,6 +70,10 @@ def main():
     # Create dataset
     dataset = RobotCDFDataset(configurations, points, cdf_values)
     print(f"Dataset size: {len(dataset)}")
+
+# After loading and preprocessing the data:
+    checksum = data_checksum(configurations, points, cdf_values)
+    print(f"Data checksum: {checksum}")
 
 
     # Create CDF network

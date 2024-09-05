@@ -2,18 +2,20 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import os
+from data.arm_2d_config import NUM_LINKS
 
 def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, device='cuda'):
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
                                                      threshold=0.01, threshold_mode='rel',
-                                                     cooldown=0, min_lr=0, eps=1e-08, verbose=True)
+                                                     cooldown=0, min_lr=0, eps=1e-08, verbose=False)
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     model_dict = {}
     
+
     for epoch in range(num_epochs):
         model.train()
         epoch_loss = 0.0
@@ -21,7 +23,7 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
         epoch_eikonal = 0.0
         epoch_tension = 0.0
 
-        for inputs, targets in dataloader:
+        for batch_idx, (inputs, targets) in enumerate(dataloader):
             inputs, targets = inputs.to(device), targets.to(device)
             inputs.requires_grad = True  # Ensure inputs require gradients
 
@@ -30,7 +32,6 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
             # Forward pass
             outputs = model(inputs).squeeze(-1)
 
-
             # Compute MSE loss
             mse_loss = torch.nn.functional.mse_loss(outputs, targets)
 
@@ -38,8 +39,8 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
             grad_outputs = torch.ones_like(outputs)
             gradients = torch.autograd.grad(outputs, inputs, grad_outputs=grad_outputs, create_graph=True)[0]
             
-            # Extract gradients for the original 5 configuration parameters
-            config_gradients = gradients[:, :5]
+            # Extract gradients for the original configuration parameters (NUM_LINKS )
+            config_gradients = gradients[:, :NUM_LINKS]
             eikonal_loss = torch.mean((config_gradients.norm(2, dim=-1) - 1)**2)
 
             # Compute Tension loss
@@ -51,19 +52,10 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
             loss = w0 * mse_loss + w1 * eikonal_loss  # Only including MSE and Eikonal for now
 
 
-            # Print detailed loss information for the first batch of each epoch
-            # if epoch == 0 or (epoch + 1) % 10 == 0:
-            #     print(f"Epoch {epoch+1}, Batch 0:")
-            #     print(f"  MSE Loss: {mse_loss.item():.6f}")
-            #     print(f"  Eikonal Loss: {eikonal_loss.item():.6f}")
-            #     print(f"  Weighted MSE: {(w0 * mse_loss).item():.6f}")
-            #     print(f"  Weighted Eikonal: {(w1 * eikonal_loss).item():.6f}")
-            #     print(f"  Total Loss: {loss.item():.6f}")
-            #     print(f"  Gradients norm: {config_gradients.norm(2, dim=-1).mean().item():.6f}")
-
-
             # Backward pass and optimize
             loss.backward()
+            
+
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 

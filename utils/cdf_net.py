@@ -24,8 +24,10 @@ class CDFNet(nn.Module):
     def reset_parameters(self):
         for m in self.mlp:
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
                 nn.init.zeros_(m.bias)
+
+
 
 from flax import linen as jnn
 import jax.numpy as jnp
