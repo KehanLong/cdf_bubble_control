@@ -42,7 +42,7 @@ def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
     # Helper function to get a random position in a quadrant
     def random_position(quadrant):
         x_range, y_range = {
-            1: ((5, 15), (5, 15)),
+            1: ((4, 8), (4, 8)),
             2: ((-15, -5), (5, 15)),
             3: ((-15, -5), (-15, -5)),
             4: ((5, 15), (-15, -5))

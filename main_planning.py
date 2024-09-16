@@ -2,9 +2,19 @@ import numpy as np
 from typing import List
 from utils_env import create_obstacles, plot_environment
 from cdf_evaluate import load_learned_cdf, cdf_evaluate_model
+import jax
+jax.config.update('jax_platform_name', 'cpu')
+
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import imageio
+from sdf_marching.samplers import get_rapidly_exploring
+from sdf_marching.overlap import position_to_max_circle_idx
+from sdf_marching.samplers.tracing import trace_toward_graph_all
+from sdf_marching.discrete import get_shortest_path
+from sdf_marching.cvx import edgeseq_to_traj_constraint_bezier, bezier_cost_all
+
+import cvxpy
 
 def animate_path(obstacles: List[np.ndarray], planned_path: np.ndarray, fps: int = 10, duration: float = 5.0):
     """
@@ -28,19 +38,23 @@ def animate_path(obstacles: List[np.ndarray], planned_path: np.ndarray, fps: int
     for i in path_indices:
         ax.clear()
         config = planned_path[i]
+
         plot_environment(obstacles, config, ax=ax)
         ax.set_title(f"Step {i+1}/{len(planned_path)}")
         
         # Convert plot to image
         fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        frames.append(image)
+        plt.show(block=False)
+        # plt.pause(0.1)
+        # image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
+        # image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        # frames.append(image)
+        fig.savefig(f"figures/test{i}.png", bbox_inches="tight")
     
     plt.close(fig)
     
     # Save as video using imageio
-    imageio.mimsave('robot_arm_animation.mp4', frames, fps=fps)
+    # imageio.mimsave('robot_arm_animation.mp4', frames, fps=fps)
 
 
 
@@ -59,7 +73,7 @@ def config_to_cdf_input(angles: jnp.ndarray) -> jnp.ndarray:
         angles,
         jnp.sin(angles),
         jnp.cos(angles)
-    ])
+    ], axis=-1).flatten()
 
 def concatenate_obstacle_list(obstacle_list):
     """
@@ -78,17 +92,75 @@ def plan_path(obstacles: List[np.ndarray], initial_config: np.ndarray, goal_conf
 
     config = config_to_cdf_input(initial_config)
     obstacle_points = concatenate_obstacle_list(obstacles)
-    cdf_values, _ = cdf_evaluate_model(jax_params, config, obstacle_points)
-    print('estimated bubble radius: ', min(cdf_values))
+    # cdf_values, _ = cdf_evaluate_model(jax_params, config, obstacle_points)
+    # print('estimated bubble radius: ', min(cdf_values))
 
+    sdf = lambda x: np.min( cdf_evaluate_model(jax_params, config_to_cdf_input(x), obstacle_points)[0] ) / 1.2
+    epsilon = 5E-2
+    minimum_radius = 1E-10
+    num_test_positions = 3000
 
-    print("Path planning not yet implemented.")
+    mins = -1 * np.pi * np.ones(initial_config.shape)
+    mins[1:] = mins[1:] /2
+    maxs = 1 * np.pi * np.ones(initial_config.shape)
+    maxs[1:] = maxs[1:] / 2
+
+    overlaps_graph, max_circles, _ = get_rapidly_exploring(
+        sdf,
+        epsilon,
+        minimum_radius,
+        num_test_positions,
+        mins,
+        maxs,
+        initial_config.tolist(),
+        end_point=goal_config,
+        max_retry=1000,
+        max_retry_epsilon=1000,
+        max_num_iterations=num_test_positions
+    )
+
+    start_idx = position_to_max_circle_idx(overlaps_graph, initial_config)
+    if start_idx < 0:
+        print("repairing graph for start")
+        overlaps_graph, start_idx = trace_toward_graph_all(overlaps_graph, sdf, epsilon, minimum_radius, initial_config)
+
+    end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
+    if end_idx < 0:
+        print("repairing graph for end")
+        overlaps_graph, end_idx = trace_toward_graph_all(overlaps_graph, sdf, epsilon, minimum_radius, goal_config)
+
+    overlaps_graph.to_directed()
+
+    epath_centre_distance = get_shortest_path(
+        lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
+        overlaps_graph,
+        start_idx,
+        end_idx,
+        cost_name="cost",
+        return_epath=True,
+    )
+
+    # print(vpath_centre_distance)
+
+    bps, constr_bps = edgeseq_to_traj_constraint_bezier(
+        overlaps_graph.es[epath_centre_distance[0]], initial_config, goal_config
+    )
+
+    cost = bezier_cost_all(bps)
+
+    prob = cvxpy.Problem(cvxpy.Minimize(cost), constr_bps)
+
+    prob.solve(verbose=True)
+
+    times = np.linspace(0, 1.0, 50)
+    query = np.vstack(list(map(lambda bp: bp.query(times).value, bps)))
 
     # For demonstration purposes, create a simple linear interpolation between initial and goal configs
-    n_steps = 100
-    planned_path = np.linspace(initial_config, goal_config, n_steps)
+    # n_steps = 100
+    # planned_path = overlaps_graph.vs[vpath_centre_distance[0]]["position"]
+    planned_path = query
   
-    return planned_path  # For now, return the planned_path 
+    return None, max_circles # For now, return the planned_path 
 
 def main():
     # Load the CDF model
@@ -125,6 +197,39 @@ def main():
     print(f"Planned path shape: {planned_path.shape}")
     print("Animation saved as 'robot_arm_animation.mp4'")
 
-
 if __name__ == "__main__":
-    main()
+    __spec__ = None
+
+    trained_model_path = "trained_models/cdf_models/cdf_model_4_256_2_links.pt"  # Adjust path as needed
+    jax_net, jax_params = load_learned_cdf(trained_model_path)
+
+    # Create obstacles
+    obstacles = create_obstacles()
+
+    # Set initial and goal configurations
+    initial_config = np.array([0, 0])
+    goal_config = np.array([np.pi/2, np.pi/4])
+
+
+    # Check CDF values for specific obstacle points
+    test_points = np.array([[4, 1], [2, 1], [10, 1]])
+    config_input = config_to_cdf_input(initial_config)
+    cdf_values, _ = cdf_evaluate_model(jax_params, config_input, test_points)
+    
+    print("CDF values for specific obstacle points:")
+    for point, cdf_value in zip(test_points, cdf_values):
+        print(f"Point {point}: CDF value = {cdf_value}")
+
+
+    # Plan path
+    planned_path, max_circles = plan_path(obstacles, initial_config, goal_config, jax_params)
+
+    # Visualize the environment with the initial arm configuration
+    # animate_path(obstacles, planned_path)
+
+
+    print(f"Initial configuration: {initial_config}")
+    print(f"Goal configuration: {goal_config}")
+    print(f"Planned path shape: {planned_path.shape}")
+    print("Animation saved as 'robot_arm_animation.mp4'")
+

@@ -20,7 +20,7 @@ def load_learned_cdf(trained_model_path="trained_models/cdf_models/cdf_model_5_2
     pytorch_net = CDFNet(input_dims=INPUT_SIZE, output_dims=OUTPUT_SIZE, hidden_layers=[HIDDEN_SIZE] * (NUM_LAYERS - 1))
     
     # Load the state dict
-    state_dict = torch.load(trained_model_path)
+    state_dict = torch.load(trained_model_path, map_location=torch.device("cpu"))
     
     # Load the state dict directly into the model
     pytorch_net.load_state_dict(state_dict)
