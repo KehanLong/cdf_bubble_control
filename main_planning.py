@@ -6,6 +6,9 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import imageio
 
+from utils_env import visualize_sdf_theta1_theta2
+from data.arm_2d_config import NUM_LINKS
+
 def animate_path(obstacles: List[np.ndarray], planned_path: np.ndarray, fps: int = 10, duration: float = 5.0):
     """
     Create an animation of the robot arm moving along the planned path.
@@ -111,6 +114,15 @@ def main():
     print("CDF values for specific obstacle points:")
     for point, cdf_value in zip(test_points, cdf_values):
         print(f"Point {point}: CDF value = {cdf_value}")
+
+
+    params_list = []
+    for i in range(NUM_LINKS):
+        params = jnp.load(f"trained_models/sdf_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
+        params_list.append(params)
+    
+    # Visualize SDF for theta1 and theta2
+    visualize_sdf_theta1_theta2(params_list, obstacles)
 
 
     # Plan path
