@@ -87,7 +87,6 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
     else:
         show_plot = False
 
-    save_path = 'environment_figure.png'
     # Plot obstacles
     for obstacle in obstacles:
         ax.fill(obstacle[:, 0], obstacle[:, 1], alpha=0.5)
@@ -112,11 +111,6 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
     ax.set_title('Robot Arm, Obstacles, and Point Cloud Observations')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"Environment figure saved as {save_path}")
-    plt.close(fig)
 
     if show_plot:
         plt.show()
