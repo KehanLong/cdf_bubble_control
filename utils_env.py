@@ -44,7 +44,7 @@ def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
     def random_position(quadrant):
         x_range, y_range = {
             1: ((5, 8), (5, 8)),
-            2: ((-10, -5), (5, 10)),
+            2: ((-8, -5), (5, 8)),
             3: ((-12, -10), (-12, -10)),
             4: ((5, 8), (-8, -5))
         }[quadrant]
@@ -116,8 +116,8 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Figure saved as {save_path}")
 
-    if show_plot:
-        plt.show()
+    # if show_plot:
+    #     plt.show()
     
     return fig, ax
 

@@ -44,8 +44,8 @@ def data_checksum(configurations, points, cdf_values):
 
 def main():
     # Configuration
-    input_size = 2 * 2 + 2  # 5 sin + 5 cos + 2 point coordinates
-    mlp_layers = [128, 128, 128, 128]
+    input_size = 2 * 2 + 2  # sin + cos + 2 point coordinates
+    mlp_layers = [256, 256, 256, 256]
     num_epochs = 500
     learning_rate = 0.002
     batch_size = 256

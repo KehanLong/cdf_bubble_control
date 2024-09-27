@@ -1,7 +1,7 @@
 # Configuration parameters
 NUM_LINKS = 2
-INPUT_SIZE = NUM_LINKS * 3 + 2  # Joint angles + 2D point
-HIDDEN_SIZE = 256             # 256
+INPUT_SIZE = NUM_LINKS * 2 + 2  # Joint angles + 2D point
+HIDDEN_SIZE = 128            # 256
 OUTPUT_SIZE = 1
 NUM_LAYERS = 5  # 5 hidden layers
 
