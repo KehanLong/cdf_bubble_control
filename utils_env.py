@@ -44,9 +44,9 @@ def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
     def random_position(quadrant):
         x_range, y_range = {
             1: ((5, 8), (5, 8)),
-            2: ((-15, -5), (5, 15)),
-            3: ((-15, -5), (-15, -5)),
-            4: ((5, 15), (-15, -5))
+            2: ((-10, -5), (5, 10)),
+            3: ((-12, -10), (-12, -10)),
+            4: ((5, 8), (-8, -5))
         }[quadrant]
         return random.uniform(*x_range), random.uniform(*y_range)
 
@@ -56,17 +56,16 @@ def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
 
     # Obstacle 2: Ellipse in second quadrant
     center = random_position(2)
-    obstacles.append(create_ellipse(center, a=random.uniform(3, 4), b=random.uniform(1.5, 2.5), 
-                                    angle=random.uniform(0, np.pi), num_points=num_points))
+    obstacles.append(create_circle(center, radius=random.uniform(2.5, 3.5), num_points=num_points))
 
     # Obstacle 3: Triangle in third quadrant
-    center = random_position(3)
-    vertices = [
-        (center[0] - random.uniform(2, 3), center[1] - random.uniform(2, 3)),
-        (center[0] + random.uniform(2, 3), center[1] - random.uniform(2, 3)),
-        (center[0] + random.uniform(-1, 1), center[1] + random.uniform(2, 3))
-    ]
-    obstacles.append(create_polygon(vertices, num_points=num_points))
+    # center = random_position(3)
+    # vertices = [
+    #     (center[0] - random.uniform(2, 3), center[1] - random.uniform(2, 3)),
+    #     (center[0] + random.uniform(2, 3), center[1] - random.uniform(2, 3)),
+    #     (center[0] + random.uniform(-1, 1), center[1] + random.uniform(2, 3))
+    # ]
+    # obstacles.append(create_polygon(vertices, num_points=num_points))
 
     # Obstacle 4: Hexagon in fourth quadrant
     center = random_position(4)
@@ -80,11 +79,12 @@ def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
 
     return obstacles
 
-def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Optional[plt.Axes] = None):
+def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Optional[plt.Axes] = None, save_path: Optional[str] = None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 10))
         show_plot = True
     else:
+        fig = ax.figure
         show_plot = False
 
     # Plot obstacles
@@ -112,8 +112,14 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
 
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Figure saved as {save_path}")
+
     if show_plot:
         plt.show()
+    
+    return fig, ax
 
 def visualize_sdf_theta1_theta2(params_list, obstacles, resolution=200, save_path='sdf_theta1_theta2_visualization.png'):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
@@ -160,6 +166,7 @@ def visualize_sdf_theta1_theta2(params_list, obstacles, resolution=200, save_pat
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Figure saved as {save_path}")
     # plt.show()
+
 
 def main():
 

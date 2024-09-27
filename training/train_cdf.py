@@ -69,7 +69,7 @@ def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, 
         epoch_eikonal /= len(dataloader)
         epoch_tension /= len(dataloader)
 
-        if epoch == 1 or (epoch + 1) % 20 == 0:
+        if epoch == 1 or (epoch + 1) % 2 == 0:
             print(f"Epoch {epoch+1}/{num_epochs}: Loss: {epoch_loss:.4f}, MSE: {epoch_mse:.4f}, Eikonal: {epoch_eikonal:.4f}, Tension: {epoch_tension:.4f}")
 
         scheduler.step(epoch_loss)
