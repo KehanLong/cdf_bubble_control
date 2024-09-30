@@ -36,34 +36,37 @@ def create_ellipse(center: Tuple[float, float], a: float, b: float, angle: float
     rotated_points = np.dot(rotation_matrix, np.vstack((x, y)))
     return np.column_stack((rotated_points[0] + center[0], rotated_points[1] + center[1]))
 
-def create_obstacles(num_points: int = 100) -> List[np.ndarray]:
+def create_obstacles(num_points: int = 100, rng=None) -> List[np.ndarray]:
+    if rng is None:
+        rng = np.random.default_rng(12345)
+
     obstacles = []
     
     # Helper function to get a random position in a quadrant
     def random_position(quadrant):
         x_range, y_range = {
-            1: ((4, 8), (4, 8)),
+            1: ((6, 8), (6, 8)),
             2: ((-15, -5), (5, 15)),
             3: ((-15, -5), (-15, -5)),
             4: ((5, 15), (-15, -5))
         }[quadrant]
-        return random.uniform(*x_range), random.uniform(*y_range)
+        return rng.uniform(*x_range), rng.uniform(*y_range)
 
     # Obstacle 1: Circle in first quadrant
     center = random_position(1)
-    obstacles.append(create_circle(center, radius=random.uniform(2.5, 3.5), num_points=num_points))
+    obstacles.append(create_circle(center, radius=rng.uniform(2.5, 3.5), num_points=num_points))
 
     # Obstacle 2: Ellipse in second quadrant
     center = random_position(2)
-    obstacles.append(create_ellipse(center, a=random.uniform(3, 4), b=random.uniform(1.5, 2.5), 
-                                    angle=random.uniform(0, np.pi), num_points=num_points))
+    obstacles.append(create_ellipse(center, a=rng.uniform(3, 4), b=rng.uniform(1.5, 2.5), 
+                                    angle=rng.uniform(0, np.pi), num_points=num_points))
 
     # Obstacle 3: Triangle in third quadrant
     center = random_position(3)
     vertices = [
-        (center[0] - random.uniform(2, 3), center[1] - random.uniform(2, 3)),
-        (center[0] + random.uniform(2, 3), center[1] - random.uniform(2, 3)),
-        (center[0] + random.uniform(-1, 1), center[1] + random.uniform(2, 3))
+        (center[0] - rng.uniform(2, 3), center[1] - rng.uniform(2, 3)),
+        (center[0] + rng.uniform(2, 3), center[1] - rng.uniform(2, 3)),
+        (center[0] + rng.uniform(-1, 1), center[1] + rng.uniform(2, 3))
     ]
     obstacles.append(create_polygon(vertices, num_points=num_points))
 

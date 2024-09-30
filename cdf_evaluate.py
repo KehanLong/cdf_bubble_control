@@ -56,10 +56,23 @@ def cdf_evaluate_model(params, config, points):
         return CDFNet_JAX(hidden_layers=(HIDDEN_SIZE,) * (NUM_LAYERS - 1), output_dims=OUTPUT_SIZE).apply(params, inputs)
     
     # Broadcast config to match the batch size of points
-    config_broadcast = jnp.broadcast_to(config, (points.shape[0], config.shape[0]))
-    
+    config_broadcast = jnp.broadcast_to(config, points.shape[:-1] + config.shape)
+    points_broadcast = jnp.broadcast_to(
+        points.reshape( points.shape[:-1] + (1,) * (config.ndim-1) + (points.shape[-1],) ), 
+        points.shape[:-1] + config.shape[:-1] + (points.shape[-1],)
+    )
+
+    print(f"Config shape: {config.shape}, broadcast shape: {config_broadcast.shape}")    
+    print(f"points shape: {points.shape}, broadcast shape: {points_broadcast.shape}")    
+
     # Combine config and points
-    inputs = jnp.concatenate([config_broadcast, points], axis=-1)
+    inputs = jnp.concatenate(
+        [
+            config_broadcast,
+            points_broadcast
+        ], 
+        axis=-1
+    )
 
     # Compute CDF values
     cdf_values = apply_model(params, inputs)
