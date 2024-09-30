@@ -65,7 +65,7 @@ class RobotCDFDataset:
         # Apply positional encoding to joint angles
         angles_sin = torch.sin(self.joint_angles)
         angles_cos = torch.cos(self.joint_angles)
-        self.encoded_joint_angles = torch.cat((self.joint_angles, angles_sin, angles_cos), dim=1)
+        self.encoded_joint_angles = torch.cat((angles_sin, angles_cos), dim=1)
     
     def __len__(self):
         return self.points.shape[0] * self.points.shape[1]

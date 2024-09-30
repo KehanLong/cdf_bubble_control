@@ -107,7 +107,7 @@ def main():
         params_list.append(params)
 
     # Generate data
-    num_configs = 100
+    num_configs = 300
     num_points = 1000
     num_surface_points_link = 100
 

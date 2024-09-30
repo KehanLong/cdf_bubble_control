@@ -58,7 +58,7 @@ def main():
     params_list = []
 
     for i in range(5):  # Load all 5 link models
-        params = jnp.load(f"trained_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
+        params = jnp.load(f"trained_models/sdf_models/link{i+1}_model_4_16.npy", allow_pickle=True).item()
         params_list.append(params)
     
     # Generate N points in the workspace
@@ -76,7 +76,7 @@ def main():
         visualize_sdf_heatmap(points, distances, title)
 
         # Load true SDF data
-        true_sdf_data = np.load(f'train_dataset/link{i+1}_sdf_data.npy', allow_pickle=True).item()
+        true_sdf_data = np.load(f'sdf_dataset/link{i+1}_sdf_data.npy', allow_pickle=True).item()
         true_points = true_sdf_data['points']
         true_distances = true_sdf_data['distances']
 
