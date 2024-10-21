@@ -68,14 +68,14 @@ class RobotCDFDataset:
         self.encoded_joint_angles = torch.cat((angles_sin, angles_cos), dim=1)
     
     def __len__(self):
-        return self.points.shape[0] * self.points.shape[1]
+        return self.joint_angles.shape[0] * self.points.shape[0]
     
     def __getitem__(self, idx):
-        config_idx = idx // self.points.shape[1]
-        point_idx = idx % self.points.shape[1]
+        config_idx = idx // self.points.shape[0]
+        point_idx = idx % self.points.shape[0]
         
         config = self.encoded_joint_angles[config_idx]
-        point = self.points[config_idx, point_idx]
+        point = self.points[point_idx]
         cdf_value = self.cdf_values[config_idx, point_idx]
         
         inputs = torch.cat((config, point))

@@ -138,7 +138,7 @@ def visualize_arm_cdf(angles, jax_params, save_path='learned_cdf_visualization.p
     print(f"Figure saved as {save_path}")
 
 def main():
-    trained_model_path="trained_models/cdf_models/cdf_model_5_256_with_surface.pt"  # or use cdf_model_5_256_eikonal.pt
+    trained_model_path="trained_models/cdf_models/cdf_model_4_256_2_links.pt"  # or use cdf_model_5_256_eikonal.pt
     # Load the trained model and convert to JAX parameters
     jax_net, jax_params = load_learned_cdf(trained_model_path)
 

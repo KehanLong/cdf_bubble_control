@@ -47,7 +47,7 @@ def main():
     input_size = 2 * 2 + 2  # sin + cos + 2 point coordinates
     mlp_layers = [256, 256, 256, 256]
     num_epochs = 500
-    learning_rate = 0.002
+    learning_rate = 0.0015
     batch_size = 256
 
     # Load the dataset
@@ -56,24 +56,16 @@ def main():
     points = data['points']
     cdf_values = data['cdf_values']
 
-
-
-    # Preprocess the data (remove NaN CDF values)
-    configurations, points, cdf_values = preprocess_data(configurations, points, cdf_values)
-
-    print("\nPreprocessed dataset info:")
+    print("\nDetailed Dataset info:")
     print(f"Configurations shape: {np.array(configurations).shape}")
+    print(f"Points shape: {np.array(points).shape}")
+    print(f"CDF values shape: {np.array(cdf_values).shape}")
     print(f"Number of configurations: {len(configurations)}")
-    print(f"Number of points per configuration: {[len(p) for p in points[:5]]}")  # Show first 5 as example
-    print(f"Number of CDF values per configuration: {[len(c) for c in cdf_values[:5]]}")  # Show first 5 as example
+    print(f"Number of points: {len(points)}")
 
     # Create dataset
     dataset = RobotCDFDataset(configurations, points, cdf_values)
     print(f"Dataset size: {len(dataset)}")
-
-# After loading and preprocessing the data:
-    checksum = data_checksum(configurations, points, cdf_values)
-    print(f"Data checksum: {checksum}")
 
 
     # Create CDF network

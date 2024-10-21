@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 import os
 from data.arm_2d_config import NUM_LINKS
 
-def train(model, dataset, num_epochs=500, batch_size=1024, learning_rate=0.001, device='cuda'):
+def train(model, dataset, num_epochs=500, batch_size=128, learning_rate=0.001, device='cuda'):
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10,
