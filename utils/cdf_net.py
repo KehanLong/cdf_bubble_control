@@ -1,56 +1,122 @@
 from torch import nn
+import numpy as np
+import torch
 import torch.nn.functional as F
 
-class CDFNet(nn.Module):
-    def __init__(self, input_dims=17, output_dims=1, hidden_layers=[128, 128, 128, 128, 128]):
-        super(CDFNet, self).__init__()
+class CDF_Net(nn.Module):
+    def __init__(
+        self,
+        input_dims,
+        hidden_dims,
+        output_dims=1,
+        skip_in=(4,),
+        geometric_init=True,
+        radius_init=1,
+        beta=100,
+        use_skip_connections=True
+    ):
+        super(CDF_Net, self).__init__()
         
-        layers = [input_dims] + hidden_layers + [output_dims]
+        self.input_dims = input_dims
+        dims = [input_dims] + hidden_dims + [output_dims]
         
-        self.mlp = nn.ModuleList()
-        for i in range(len(layers) - 1):
-            self.mlp.append(nn.Linear(layers[i], layers[i+1]))
-        
-        self.reset_parameters()
+        self.num_layers = len(dims)
+        self.skip_in = skip_in if use_skip_connections else ()
 
+        for layer in range(0, self.num_layers - 1):
+            if layer + 1 in self.skip_in:
+                out_dim = dims[layer + 1] - input_dims  # Adjust output dimension for skip connections
+            else:
+                out_dim = dims[layer + 1]
+
+            lin = nn.Linear(dims[layer], out_dim)
+
+            if geometric_init:
+                if layer == self.num_layers - 2:
+                    torch.nn.init.normal_(lin.weight, mean=np.sqrt(np.pi) / np.sqrt(dims[layer]), std=0.00001)
+                    torch.nn.init.constant_(lin.bias, -radius_init)
+                else:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.normal_(lin.weight, 0.0, np.sqrt(2) / np.sqrt(out_dim))
+            else:
+                torch.nn.init.kaiming_normal_(lin.weight, mode='fan_in', nonlinearity='relu')
+                torch.nn.init.constant_(lin.bias, 0)
+
+            setattr(self, f"lin{layer}", lin)
+
+        self.activation = nn.Softplus(beta=beta) if beta > 0 else nn.ReLU()
+        
     def forward(self, x):
-        for i, layer in enumerate(self.mlp):
-            x = layer(x)
-            if i < len(self.mlp) - 1:  # Apply softplus to all but the last layer
-                x = F.softplus(x)
-        
-        return F.relu(x)  # Apply ReLU to the final output
-
-    def reset_parameters(self):
-        for m in self.mlp:
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                nn.init.zeros_(m.bias)
+        input = x
+        for layer in range(0, self.num_layers - 1):
+            lin = getattr(self, f"lin{layer}")
+            if layer in self.skip_in:
+                x = torch.cat([x, input], -1)
+            x = lin(x)
+            if layer < self.num_layers - 2:
+                x = self.activation(x)
+        return x  
 
 
 
-from flax import linen as jnn
+import jax
 import jax.numpy as jnp
-from typing import Sequence
+from flax import linen as lnn
+from typing import Sequence, Tuple, Any
 
+class CustomDense(lnn.Module):
+    features: int
+    use_bias: bool = True
 
-class CDFNet_JAX(jnn.Module):
-    hidden_layers: Sequence[int] = (128, 128, 128, 128, 128)
+    @lnn.compact
+    def __call__(self, inputs):
+        kernel = self.variable('params', 'kernel', lambda: None)
+        bias = self.variable('params', 'bias', lambda: None)
+        print(f"CustomDense input shape: {inputs.shape}, kernel shape: {kernel.value.shape}")
+        y = jnp.dot(inputs, kernel.value.T)
+        if self.use_bias:
+            y += bias.value
+        print(f"CustomDense output shape: {y.shape}")
+        return y
+
+class CDFNet_JAX(lnn.Module):
+    input_dims: int
+    hidden_dims: Sequence[int]
     output_dims: int = 1
+    skip_in: Tuple[int] = (4,)
+    beta: float = 100
+    use_skip_connections: bool = True
 
-    @jnn.compact
+    @staticmethod
+    def custom_softplus(x, beta):
+        return (1.0 / beta) * jnp.log(1 + jnp.exp(beta * x))
+
+    @lnn.compact
     def __call__(self, x):
-        for units in self.hidden_layers:
-            x = jnn.Dense(units)(x)
-            x = jnn.softplus(x)
-        
-        x = jnn.Dense(self.output_dims)(x)
-        return jnp.maximum(x, 0)  # ReLU activation
+        print(f"Input shape: {x.shape}")
+        input_x = x
+        dims = [self.input_dims] + list(self.hidden_dims) + [self.output_dims]
+        num_layers = len(dims)
+        skip_in = self.skip_in if self.use_skip_connections else ()
 
-    @staticmethod
-    def init_weights(key, shape, dtype):
-        return jnp.array(jnn.initializers.xavier_uniform()(key, shape, dtype))
+        for layer in range(num_layers - 1):
+            print(f"Layer {layer}, input shape: {x.shape}")
+            
+            out_dim = dims[layer + 1]
+            lin = CustomDense(features=out_dim)
+            x = lin(x)
 
-    @staticmethod
-    def init_bias(key, shape, dtype):
-        return jnp.zeros(shape, dtype)
+            if layer < num_layers - 2:
+                x = self.custom_softplus(x, self.beta) if self.beta > 0 else jax.nn.relu(x)
+            
+            if layer + 1 in skip_in:
+                x = jnp.concatenate([x, input_x], axis=-1)
+                print(f"After skip connection, shape: {x.shape}")
+            
+            print(f"Layer {layer} output shape: {x.shape}")
+
+        return x
+
+
+
+

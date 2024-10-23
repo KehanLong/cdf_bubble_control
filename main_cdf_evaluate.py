@@ -1,9 +1,9 @@
 import numpy as np
+import jax.numpy as jnp
 from typing import List
 from utils_env import create_obstacles, plot_environment
 from cdf_evaluate import load_learned_cdf, cdf_evaluate_model
-import jax
-import jax.numpy as jnp
+import torch
 import matplotlib.pyplot as plt
 import imageio
 from matplotlib.patches import Circle, Rectangle
@@ -49,21 +49,21 @@ def animate_path(obstacles: List[np.ndarray], planned_path: np.ndarray, fps: int
 
 
 
-def config_to_cdf_input(angles: jnp.ndarray) -> jnp.ndarray:
+def config_to_cdf_input(angles: np.ndarray) -> np.ndarray:
     """
     Convert arm configuration angles to the input format required by cdf_evaluate_model.
     
     Args:
-    angles (jnp.ndarray): Array of joint angles.
+    angles (np.ndarray): Array of joint angles.
     
     Returns:
-    jnp.ndarray: Formatted input for cdf_evaluate_model.
+    np.ndarray: Formatted input for cdf_evaluate_model.
     """
     num_angles = angles.shape[0]
-    return jnp.concatenate([
-        #angles,
-        jnp.sin(angles),
-        jnp.cos(angles)
+    return np.concatenate([
+        angles,
+        np.sin(angles),
+        np.cos(angles)
     ])
 
 def concatenate_obstacle_list(obstacle_list):
@@ -79,69 +79,56 @@ def concatenate_obstacle_list(obstacle_list):
     return np.concatenate(obstacle_list, axis=0)
 
 
-def visualize_cdf_theta1_theta2(jax_params, obstacles, resolution=200, batch_size=1000, num_bubbles=10, save_path='cdf_theta1_theta2_visualization.png'):
-    fig, ax = plt.subplots(figsize=(15, 10), dpi=300)  # Adjusted figure size to be rectangular
+def visualize_cdf_theta1_theta2(model, device, obstacles, resolution=200, batch_size=1000, num_bubbles=10, save_path='cdf_theta1_theta2_visualization.png'):
+    fig, ax = plt.subplots(figsize=(15, 10), dpi=300)
     
     # Generate angles for theta1 and theta2
-    theta1_range = jnp.linspace(-jnp.pi, jnp.pi, resolution)
-    theta2_range = jnp.linspace(-jnp.pi, jnp.pi, resolution)
-    theta1_mesh, theta2_mesh = jnp.meshgrid(theta1_range, theta2_range)
+    theta1_range = np.linspace(-np.pi, np.pi, resolution)
+    theta2_range = np.linspace(-np.pi, np.pi, resolution)
+    theta1_mesh, theta2_mesh = np.meshgrid(theta1_range, theta2_range)
     
-    # Flatten the meshgrid for batched computation
-    theta1_flat = theta1_mesh.flatten()
-    theta2_flat = theta2_mesh.flatten()
-    
-    # Create angles array with only two angles
-    angles_flat = jnp.column_stack((theta1_flat, theta2_flat))
+    # Flatten the meshgrid
+    configs = np.column_stack((theta1_mesh.flatten(), theta2_mesh.flatten()))
     
     # Combine all obstacle points
-    all_obstacle_points = jnp.concatenate(obstacles, axis=0)
-    
-    # Batched CDF computation
-    @jax.vmap
-    def compute_cdf(angles):
-        config = config_to_cdf_input(angles)
-        cdf_values, _ = cdf_evaluate_model(jax_params, config, all_obstacle_points)
-        return jnp.min(cdf_values)
+    all_obstacle_points = concatenate_obstacle_list(obstacles)
     
     # Process in batches
     cdf_values = []
-    for i in range(0, len(angles_flat), batch_size):
-        batch = angles_flat[i:i+batch_size]
-        cdf_values.append(compute_cdf(batch))
+    for i in range(0, len(configs), batch_size):
+        batch_configs = configs[i:i+batch_size]
+        batch_cdf_values = cdf_evaluate_model(model, batch_configs, all_obstacle_points, device)
+        cdf_values.append(batch_cdf_values)
     
-    cdf_values = jnp.concatenate(cdf_values)
-    cdf_values = cdf_values.reshape(resolution, resolution)
+    cdf_values = np.concatenate(cdf_values)
+    cdf_values = np.min(cdf_values, axis=1).reshape(resolution, resolution)
     
     # Plot the heatmap
-    heatmap = ax.imshow(cdf_values, extent=[-jnp.pi, jnp.pi, -jnp.pi, jnp.pi], origin='lower', 
-                        aspect='auto', cmap='viridis')
+    contour = ax.contourf(theta1_mesh, theta2_mesh, cdf_values, levels=20, cmap='viridis')
     contour = ax.contour(theta1_mesh, theta2_mesh, cdf_values, levels=[0.1], colors='red', linewidths=2)
     
     # Generate random points for bubbles
     random_theta1 = np.random.uniform(-np.pi + 0.2, np.pi - 0.2, num_bubbles)
     random_theta2 = np.random.uniform(-np.pi + 0.2, np.pi - 0.2, num_bubbles)
-    random_points = jnp.column_stack((random_theta1, random_theta2))
+    random_points = np.column_stack((random_theta1, random_theta2))
     
     # Compute CDF values for random points
-    random_cdf_values = compute_cdf(random_points)
+    random_cdf_values = cdf_evaluate_model(model, random_points, all_obstacle_points, device)
+    random_cdf_values = np.min(random_cdf_values, axis=1)
     
     # Create a clip path
-    clip_rect = Rectangle((-np.pi, -np.pi), 2*np.pi, np.pi, fill=False)
+    clip_rect = Rectangle((-np.pi, -np.pi), 2*np.pi, 2*np.pi, fill=False)
     ax.add_patch(clip_rect)
     
     # Plot bubbles
-    # for point, cdf_value in zip(random_points, random_cdf_values):
-    #     if cdf_value > 0.05:
-    #         circle = Circle(point, cdf_value - 0.05, fill=False, color='red', alpha=0.5, clip_path=clip_rect)
-    #         ax.add_patch(circle)
+    for point, cdf_value in zip(random_points, random_cdf_values):
+        if cdf_value > 0.05:
+            circle = Circle(point, cdf_value - 0.05, fill=False, color='red', alpha=0.5, clip_path=clip_rect)
+            ax.add_patch(circle)
     
     ax.set_xlabel('Theta 1 (radians)')
     ax.set_ylabel('Theta 2 (radians)')
-    ax.set_title('CDF Visualization with Bubbles for Theta 1 and Theta 2')
-    
-    cbar = fig.colorbar(heatmap, ax=ax)
-    cbar.set_label('Minimum CDF Value')
+    ax.set_title('CDF Visualization for Theta 1 and Theta 2')
     
     # Set aspect ratio to be equal
     ax.set_aspect('equal', adjustable='box')
@@ -174,10 +161,12 @@ def plan_path(obstacles: List[np.ndarray], initial_config: np.ndarray, goal_conf
   
     return planned_path  # For now, return the planned_path 
 
+
 def main():
     # Load the CDF model
-    trained_model_path = "trained_models/cdf_models/cdf_model_4_256_2_links.pt"  # Adjust path as needed
-    jax_net, jax_params = load_learned_cdf(trained_model_path)
+    trained_model_path = "trained_models/cdf_models/cdf_model_zeroconfigs_2_links_best.pt"  # Adjust path as needed
+    torch_model = load_learned_cdf(trained_model_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create obstacles
     obstacles = create_obstacles()
@@ -190,8 +179,7 @@ def main():
 
     # Check CDF values for specific obstacle points
     test_points = np.array([[2, 0], [1, 0], [-2, 1]])
-    config_input = config_to_cdf_input(initial_config)
-    cdf_values, _ = cdf_evaluate_model(jax_params, config_input, test_points)
+    cdf_values = cdf_evaluate_model(torch_model, initial_config, test_points, device)
     
     print("CDF values for specific obstacle points:")
     for point, cdf_value in zip(test_points, cdf_values):
@@ -205,12 +193,14 @@ def main():
 
     #
     plot_environment(obstacles, initial_config, save_path='high_res_environment.png')
+
+
     
     # Visualize SDF for theta1 and theta2
-    visualize_simple_sdf_theta1_theta2(obstacles)
+    # visualize_simple_sdf_theta1_theta2(obstacles)
 
     # Visualize CDF for theta1 and theta2 with bubbles
-    visualize_cdf_theta1_theta2(jax_params, obstacles, num_bubbles=100)
+    visualize_cdf_theta1_theta2(torch_model, device, obstacles, num_bubbles=100)
 
     # Plan path
     # planned_path = plan_path(obstacles, initial_config, goal_config, jax_params)

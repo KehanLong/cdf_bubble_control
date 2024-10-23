@@ -1,16 +1,23 @@
 import numpy as np
-from scipy.optimize import minimize
+import jax
+import jax.numpy as jnp
+from functools import partial
 import time
-from arm_2d_cdf_simplified import SimpleCDF2D
+from arm_2d_cdf_simplified import SimpleCDF2D, precompute_configs_jax
 import os
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+@jax.jit
+def compute_cdf_batch(configs, zero_configs):
+    return jax.vmap(lambda c: jnp.min(jnp.linalg.norm(c - zero_configs, axis=1)))(configs)
+
 class CDFDatasetGenerator:
     def __init__(self, link_lengths, num_points, num_configs, num_zero_configs):
-        self.cdf = SimpleCDF2D(link_lengths, num_precomputed=num_zero_configs)
+        self.cdf = SimpleCDF2D(link_lengths)
         self.num_points = num_points
         self.num_configs = num_configs
+        self.num_zero_configs = num_zero_configs
         self.workspace_radius = np.sum(link_lengths)
 
     def generate_workspace_points(self):
@@ -23,15 +30,6 @@ class CDFDatasetGenerator:
     def generate_configs(self):
         return np.random.uniform(-np.pi, np.pi, (self.num_configs, self.cdf.num_joints))
 
-    def compute_zero_configs(self, point):
-        obstacle = [point[0], point[1], 0]
-        self.cdf.precompute_configs(obstacle)
-        return self.cdf.precomputed_configs
-
-    def compute_cdf(self, config, zero_configs):
-        distances = np.linalg.norm(config - zero_configs, axis=1)
-        return np.min(distances)
-
     def generate_dataset(self):
         print("Generating workspace points...")
         points = self.generate_workspace_points()
@@ -39,25 +37,21 @@ class CDFDatasetGenerator:
         print("Generating configurations...")
         configs = self.generate_configs()
 
-        print("Computing zero configurations for each point...")
-        zero_configs_dict = {}
+        print("Computing zero configurations and CDF values for all points...")
         valid_points = []
-        for point in tqdm(points, desc="Computing zero configs"):
-            zero_configs = self.compute_zero_configs(point)
+        cdf_values = []
+
+        for point in tqdm(points, desc="Processing points"):
+            obstacle = np.concatenate([point, [0]])
+            zero_configs = precompute_configs_jax(self.cdf, obstacle, num_precomputed=self.num_zero_configs)
+            
             if len(zero_configs) > 0:
-                zero_configs_dict[tuple(point)] = zero_configs
+                point_cdf_values = compute_cdf_batch(configs, zero_configs)
+                cdf_values.append(point_cdf_values)
                 valid_points.append(point)
 
         valid_points = np.array(valid_points)
-
-        print("Generating dataset...")
-        cdf_values = np.zeros((self.num_configs, len(valid_points)))
-        total_pairs = self.num_configs * len(valid_points)
-        with tqdm(total=total_pairs, desc="Computing CDF values") as pbar:
-            for i, config in enumerate(configs):
-                for j, point in enumerate(valid_points):
-                    cdf_values[i, j] = self.compute_cdf(config, zero_configs_dict[tuple(point)])
-                    pbar.update(1)
+        cdf_values = np.array(cdf_values).T  # Transpose to match the expected shape
 
         return configs, valid_points, cdf_values
 
@@ -71,52 +65,59 @@ def save_dataset(configs, all_points, cdf_values, filename):
     np.save(filename, data)
     print(f"Dataset saved to {filename}")
 
-def visualize_dataset_sample(configs, all_points, cdf_values, sample_idx, save_path):
+def forward_kinematics(q, link_lengths):
+    x, y = 0, 0
+    positions = [(x, y)]
+    for i in range(len(link_lengths)):
+        x += link_lengths[i] * np.cos(np.sum(q[:i+1]))
+        y += link_lengths[i] * np.sin(np.sum(q[:i+1]))
+        positions.append((x, y))
+    return positions
+
+def visualize_dataset_sample(configs, all_points, cdf_values, sample_idx, save_path, link_lengths):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
     
-    # Get the configuration and all points for this sample
-    config = configs[sample_idx]
-    points = all_points
+    # Get the point and zero configuration for this sample
+    point = all_points[sample_idx]
+    config = configs[sample_idx][0]  # Take the first zero config for visualization
     
-    # Create scatter plot
-    scatter = ax.scatter(points[:, 0], points[:, 1], c=cdf_values[sample_idx], cmap='viridis', s=10)
+    # Create scatter plot of all points
+    ax.scatter(all_points[:, 0], all_points[:, 1], c='lightblue', s=10, alpha=0.5)
+    
+    # Highlight the selected point
+    ax.scatter(point[0], point[1], c='red', s=50, zorder=3)
     
     # Plot robot arm
-    joint_positions = forward_kinematics(config)
-    ax.plot([0, joint_positions[0][0]], [0, joint_positions[0][1]], 'k-', linewidth=2)
-    ax.plot([joint_positions[0][0], joint_positions[1][0]], [joint_positions[0][1], joint_positions[1][1]], 'k-', linewidth=2)
-    ax.plot(0, 0, 'ko', markersize=8)
-    ax.plot(joint_positions[0][0], joint_positions[0][1], 'ko', markersize=8)
-    ax.plot(joint_positions[1][0], joint_positions[1][1], 'ko', markersize=8)
+    joint_positions = forward_kinematics(config, link_lengths)
+    for i in range(len(joint_positions) - 1):
+        ax.plot([joint_positions[i][0], joint_positions[i+1][0]], 
+                [joint_positions[i][1], joint_positions[i+1][1]], 'k-', linewidth=2)
+        ax.plot(joint_positions[i][0], joint_positions[i][1], 'ko', markersize=8)
     
-    ax.set_xlim(-4, 4)
-    ax.set_ylim(-4, 4)
-    ax.set_title(f'CDF Visualization for Robot Arm (Sample {sample_idx})')
+    # Plot end effector
+    ax.plot(joint_positions[-1][0], joint_positions[-1][1], 'ro', markersize=10)
+    
+    # Set plot limits based on workspace
+    workspace_radius = np.sum(link_lengths)
+    ax.set_xlim(-workspace_radius, workspace_radius)
+    ax.set_ylim(-workspace_radius, workspace_radius)
+    ax.set_title(f'Zero Configuration Visualization for {len(link_lengths)}-link Robot Arm (Sample {sample_idx})')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-    
-    cbar = fig.colorbar(scatter, ax=ax)
-    cbar.set_label('CDF Value')
     
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Figure saved as {save_path}")
 
-def forward_kinematics(q):
-    l1, l2 = 2, 2  # link lengths
-    x1 = l1 * np.cos(q[0])
-    y1 = l1 * np.sin(q[0])
-    x2 = x1 + l2 * np.cos(q[0] + q[1])
-    y2 = y1 + l2 * np.sin(q[0] + q[1])
-    return [(x1, y1), (x2, y2)]
+
 
 def main():
     # Parameters that can be easily tuned
-    link_lengths = [2, 2]  # 2-link robot arm
-    num_points = 2000
-    num_configs = 200
-    num_zero_configs = 100  # Number of zero configs to compute for each point
+    link_lengths = [2, 2]  # N-link robot arm
+    num_points = 20
+    num_configs = 100
+    num_zero_configs = 20 # Number of zero configs to compute for each point
 
     print(f"Initializing dataset generation with:")
     print(f"  Number of points: {num_points}")
@@ -133,11 +134,13 @@ def main():
     print(f"Dataset size: {configs.shape[0]} configurations, {all_points.shape[0]} points")
     
     print("Saving dataset...")
-    save_dataset(configs, all_points, cdf_values, 'cdf_dataset/robot_cdf_dataset_2_links.npy')
+    save_dataset(configs, all_points, cdf_values, 'cdf_dataset/robot_cdf_dataset_4_links.npy')
 
     print("Generating visualizations...")
     for i in tqdm(range(5), desc="Generating visualizations"):
-        visualize_dataset_sample(configs, all_points, cdf_values, i, f'cdf_dataset/sample_visualization_{i}.png')
+        visualize_dataset_sample(configs, all_points, cdf_values, i, 
+                                 f'cdf_dataset/sample_visualization_{i}.png',
+                                 link_lengths=link_lengths)
 
     print("Dataset generation and visualization complete!")
 
