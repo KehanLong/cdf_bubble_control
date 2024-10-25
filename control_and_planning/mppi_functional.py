@@ -1,9 +1,10 @@
 import jax
 import jax.numpy as jnp
 from jax.random import multivariate_normal
-from jax import jit, lax
+from jax import jit, lax, debug
 
-from utils_new import *
+from utils_new import forward_kinematics
+from cdf_evaluate_jax import cdf_evaluate_model_jax
 
 
 # if no gpu available
@@ -11,14 +12,14 @@ from utils_new import *
 
 
     
-def setup_mppi_controller(learned_CSDF = None, robot_n = 8, input_size = 8, initial_horizon=10, samples = 10, control_bound = 0.2, dt=0.05, u_guess=None, use_GPU=True, costs_lambda = 0.03,  cost_goal_coeff = 0.2, cost_safety_coeff = 10.0, cost_perturbation_coeff=0.1, cost_goal_coeff_final = 0.2, cost_safety_coeff_final = 10.0, cost_state_coeff = 10.0):
+def setup_mppi_controller(learned_CDF = None, robot_n = 8, input_size = 8, initial_horizon=10, samples = 1000, control_bound = 0.2, dt=0.05, u_guess=None, use_GPU=True, costs_lambda = 0.03,  cost_goal_coeff = 2.0, cost_safety_coeff = 10.0, cost_perturbation_coeff=0.1, cost_goal_coeff_final = 2.0, cost_safety_coeff_final = 10.0):
 
     """
     Set up the MPPI controller.
 
-    :param learned_CSDF: Learned N-CSDF for robot shape modeling (a link)
+    :param learned_CDF: Learned N-CDF for robot arm configuration space shape modeling
     :param robot_n: Dimension of states
-    :param input_size: Control input dimension. In the CDSR mode, it equals to robot_n
+    :param input_size: Control input dimension. In the manipulation mode, it equals to robot_n
     :param horizon: Initial prediction time horizon
     :param samples: Number of control samples around the initial guess
     :param control_bound: Control bounds
@@ -43,8 +44,6 @@ def setup_mppi_controller(learned_CSDF = None, robot_n = 8, input_size = 8, init
     dt = dt
     use_gpu = use_GPU
 
-    jax_params = learned_CSDF
-
     control_mu = jnp.zeros(robot_m) 
     control_cov = 2 * jnp.eye(robot_m) 
     control_cov_inv = jnp.linalg.inv(control_cov)
@@ -61,20 +60,17 @@ def setup_mppi_controller(learned_CSDF = None, robot_n = 8, input_size = 8, init
     cost_goal_coeff_final = cost_goal_coeff_final
     cost_safety_coeff_final = cost_safety_coeff_final
 
-    cost_state_coeff = cost_state_coeff
-
 
     @jit
     def robot_dynamics_step(state, input):
-        # Unicycle robot dynamics
-        x, y, theta = state
-        v, omega = input
+        # Robot arm dynamics: assuming state and input are joint angles and velocities
+        joint_angles = state
+        joint_velocities = input
 
-        x_next = x + v * jnp.cos(theta) * dt
-        y_next = y + v * jnp.sin(theta) * dt
-        theta_next = theta + omega * dt
+        # Update joint angles based on velocities
+        joint_angles_next = joint_angles + joint_velocities * dt
 
-        return jnp.array([x_next, y_next, theta_next])
+        return joint_angles_next
     
     @jit
     def weighted_sum(U, perturbation, costs):
@@ -94,8 +90,8 @@ def setup_mppi_controller(learned_CSDF = None, robot_n = 8, input_size = 8, init
     @jit
     def single_sample_rollout(goal, robot_states_init, perturbed_control, obstaclesX, perturbation, safety_margin):
         # Initialize robot_state
-        robot_states = jnp.zeros((3, horizon))
-        robot_states = robot_states.at[:,0].set(robot_states_init)
+        robot_states = jnp.zeros((robot_n, horizon))
+        robot_states = robot_states.at[:, 0].set(robot_states_init)
 
         # loop over horizon
         cost_sample = 0
@@ -103,69 +99,52 @@ def setup_mppi_controller(learned_CSDF = None, robot_n = 8, input_size = 8, init
             cost_sample, robot_states, obstaclesX = inputs
 
             # get robot state
-            robot_state = robot_states[:,[i]]
+            robot_state = robot_states[:, [i]]
 
-            # Compute the distance between the robot position and the goal
-            robot_position = robot_state[:2]
-            end_center_distance = jnp.linalg.norm(goal - robot_position) 
+            #debug.print("robot state at step {}: {}", i, robot_state)
 
-            cost_sample = cost_sample + cost_goal_coeff * end_center_distance            
-            cost_sample = cost_sample + cost_perturbation_coeff * ((perturbed_control[:, [i]]-perturbation[:,[i]]).T @ control_cov_inv @ perturbation[:,[i]])[0,0]
+            # Compute the distance between the robot end-effector position and the goal
+            end_effector_position = forward_kinematics(robot_state)  # Assuming a forward kinematics function
+            end_center_distance = jnp.linalg.norm(goal - end_effector_position.squeeze())
 
+            # Use JAX's debug.print for printing inside JIT-compiled function
+            # debug.print("distance to goal at step {}: {}", i, end_effector_position)
 
-            # orientation cost
-            cost_orient_coeff = 0.
-            robot_orientation = robot_state[2]
-            end_orientation_diff = jnp.linalg.norm(jnp.pi/2 - robot_orientation) 
-            cost_sample = cost_sample + cost_orient_coeff * end_orientation_diff 
+            cost_sample = cost_sample + cost_goal_coeff * end_center_distance
+            cost_sample = cost_sample + cost_perturbation_coeff * ((perturbed_control[:, [i]] - perturbation[:, [i]]).T @ control_cov_inv @ perturbation[:, [i]])[0, 0]
 
-            '''
-            obstacle avoidance cost
-            '''
-            # circular version
-            # distances = jnp.linalg.norm(obstaclesX - robot_position)
-            # min_distance = jnp.min(distances)
-            # cost_sample = cost_sample + cost_safety_coeff_final / jnp.max(jnp.array([min_distance - safety_margin, 0.01]))
-
-
-            # learned sdf version
-            sdf_distances, _ = evaluate_model(jax_params, obstaclesX, robot_state)
-            # jax.debug.print("dist: {x}", x=sdf_distances - safety_margin)
-            cost_sample = cost_sample + cost_safety_coeff / jnp.max(jnp.array([jnp.min(sdf_distances)- safety_margin, 0.01]))
-
-            # jax.debug.print("safety_cost: {x}", x = cost_safety_coeff / jnp.max(jnp.array([jnp.min(sdf_distances)- safety_margin, 0.01])))
-
+            # Evaluate CDF for obstacle avoidance
+            cdf_values, _ = cdf_evaluate_model_jax(learned_CDF, robot_state.squeeze().T, obstaclesX)
+            min_cdf_value = jnp.min(cdf_values)
+            cost_sample = cost_sample + cost_safety_coeff / jnp.max(jnp.array([min_cdf_value - safety_margin, 0.01]))
 
             # Update robot states
-            robot_states = robot_states.at[:,i+1].set(robot_dynamics_step(robot_states[:,[i]], perturbed_control[:, [i]])[:,0])
+            robot_states = robot_states.at[:, i + 1].set(robot_dynamics_step(robot_states[:, [i]], perturbed_control[:, [i]])[:, 0])
 
-            # jax.debug.print("robot_states: {x}", x = robot_states[:, [i]])
             return cost_sample, robot_states, obstaclesX
         
         cost_sample, robot_states, _ = lax.fori_loop(0, horizon-1, body, (cost_sample, robot_states, obstaclesX))
 
         robot_state = robot_states[:,[horizon-1]]
-        robot_position = robot_state[:2]
-        end_center_distance = jnp.linalg.norm(goal - robot_position)
+
+        end_effector_position = forward_kinematics(robot_state)  # Assuming a forward kinematics function
+        end_center_distance = jnp.linalg.norm(goal - end_effector_position.squeeze())
 
         cost_sample = cost_sample + cost_goal_coeff_final * end_center_distance
         cost_sample = cost_sample + cost_perturbation_coeff * ((perturbed_control[:, [horizon]]-perturbation[:,[horizon]]).T @ control_cov_inv @ perturbation[:,[horizon]])[0,0]
 
-        cost_orient_coeff = 0
-        robot_orientation = robot_state[2]
-        end_orientation_diff = jnp.linalg.norm(jnp.pi/2 - robot_orientation) 
-        cost_sample = cost_sample + cost_orient_coeff * end_orientation_diff 
 
-
-        
         # distances = jnp.linalg.norm(obstaclesX - robot_position)
         # min_distance = jnp.min(distances)
         # cost_sample = cost_sample + cost_safety_coeff_final / jnp.max(jnp.array([min_distance - safety_margin, 0.01]))
 
 
-        sdf_distances, _ = evaluate_model(jax_params, obstaclesX, robot_state)
-        cost_sample = cost_sample + cost_safety_coeff / jnp.max(jnp.array([jnp.min(sdf_distances)- safety_margin, 0.01]))
+        # Evaluate CDF for obstacle avoidance
+        cdf_values, _ = cdf_evaluate_model_jax(learned_CDF, robot_state.squeeze().T, obstaclesX)
+        min_cdf_value = jnp.min(cdf_values)
 
+        # jax.debug.print("min cdf value: {}", min_cdf_value)
+        cost_sample = cost_sample + cost_safety_coeff_final / jnp.max(jnp.array([min_cdf_value - safety_margin, 0.01]))
 
         return cost_sample, robot_states
 
@@ -253,3 +232,4 @@ def setup_mppi_controller(learned_CSDF = None, robot_n = 8, input_size = 8, init
 
     
         
+

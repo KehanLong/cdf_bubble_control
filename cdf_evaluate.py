@@ -2,7 +2,9 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from utils.cdf_net import CDF_Net
-from data.arm_2d_config import NUM_LINKS
+import re
+import jax
+import jax.numpy as jnp
 
 
 def forward_kinematics(q, link_lengths):
@@ -14,13 +16,15 @@ def forward_kinematics(q, link_lengths):
         positions.append((x, y))
     return np.array(positions)
 
-def load_learned_cdf(trained_model_path="trained_models/cdf_models/cdf_model_zeroconfigs_2_links_best.pt", device=None):
+def load_learned_cdf(trained_model_path="trained_models/cdf_models/cdf_model_2_links.pt", device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+    num_links = infer_num_links(trained_model_path)
+    
     state_dict = torch.load(trained_model_path, map_location=device)
     model = CDF_Net(
-        input_dims=NUM_LINKS * 3 + 2,
+        input_dims=num_links * 3 + 2,
         hidden_dims=[512, 512, 512, 512],
         output_dims=1,
         skip_in=(4,),
@@ -29,8 +33,9 @@ def load_learned_cdf(trained_model_path="trained_models/cdf_models/cdf_model_zer
     model.eval()
     return model
 
-def cdf_evaluate_model(model, configs, points, device):
+def cdf_evaluate_model(model, configs, points, device, batch_size=1024):
     model.eval()
+    cdf_values = []
     with torch.no_grad():
         # Ensure configs and points are 2D
         if configs.ndim == 1:
@@ -55,52 +60,88 @@ def cdf_evaluate_model(model, configs, points, device):
             points_tensor.expand(configs_tensor.shape[0], -1, -1)
         ], dim=-1)
         
-        # Get model predictions
-        cdf_values = model(input_tensor.view(-1, input_tensor.shape[-1]))
-        cdf_values = cdf_values.view(configs_tensor.shape[0], points_tensor.shape[1])
+        # Process in batches
+        num_samples = input_tensor.shape[0]
+        for start in range(0, num_samples, batch_size):
+            end = min(start + batch_size, num_samples)
+            batch_input = input_tensor[start:end]
+            batch_cdf_values = model(batch_input.view(-1, batch_input.shape[-1]))
+            cdf_values.append(batch_cdf_values.cpu().numpy())
     
-    return cdf_values.cpu().numpy()
+    return np.concatenate(cdf_values, axis=0).reshape(configs_tensor.shape[0], points_tensor.shape[1])
 
-def plot_cdf_field(model, device, link_lengths, obstacle, resolution=50, save_path='cdf_field.png'):
-    print("Plotting CDF field...")
+
+def infer_num_links(trained_model_path):
+    match = re.search(r'(\d+)_links', trained_model_path)
+    if match:
+        return int(match.group(1))
+    else:
+        raise ValueError("Number of links not found in the model path.")
+
+def plot_cdf_field(ax, model, device, joint_pair, num_links, obstacle, resolution=50):
+    theta = np.linspace(-np.pi, np.pi, resolution)
+    Theta1, Theta2 = np.meshgrid(theta, theta)
     
-    theta1 = np.linspace(-np.pi, np.pi, resolution)
-    theta2 = np.linspace(-np.pi, np.pi, resolution)
-    Theta1, Theta2 = np.meshgrid(theta1, theta2)
+    Z = np.zeros_like(Theta1)
+    for idx, (x, y) in enumerate(np.ndindex(Theta1.shape)):
+        q = np.zeros(num_links)
+        q[joint_pair[0]] = Theta1[x, y]
+        q[joint_pair[1]] = Theta2[x, y]
+        # Set fixed angles for other joints
+        fixed_joints = [j for j in range(num_links) if j not in joint_pair]
+        q[fixed_joints] = np.pi / 4  # Example fixed angle
 
-    configs = np.stack([Theta1.ravel(), Theta2.ravel()], axis=1)
-    obstacle_point = obstacle[:2].reshape(1, -1)  # Use only x, y coordinates, ensure 2D
+        # Evaluate CDF for the current configuration
+        Z[x, y] = cdf_evaluate_model(model, q[np.newaxis, :], obstacle[:2].reshape(1, -1), device)
 
-    # Evaluate CDF for all configurations at once
-    Z = cdf_evaluate_model(model, configs, obstacle_point, device)
-    Z = Z.reshape(resolution, resolution)
-
-    fig, ax = plt.subplots(figsize=(10, 8))
+    # Plot CDF
     contour = ax.contourf(Theta1, Theta2, Z, levels=20, cmap='viridis')
+    zero_level = ax.contour(Theta1, Theta2, Z, levels=[0.1], colors='r', linewidths=2)
     plt.colorbar(contour, ax=ax, label='CDF Value')
 
-    ax.set_xlabel('θ1')
-    ax.set_ylabel('θ2')
-    ax.set_title('CDF Field for 2D Robot Arm')
-
-    # Plot the zero level set (you may need to adjust the level value)
-    zero_level = ax.contour(Theta1, Theta2, Z, levels=[0.1], colors='r', linewidths=2)
+    # Add labels to the zero level set
     ax.clabel(zero_level, inline=True, fmt='Zero', colors='r')
 
-    plt.savefig(save_path)
-    plt.close()
+    ax.set_xlabel(f'θ{joint_pair[0] + 1}')
+    ax.set_ylabel(f'θ{joint_pair[1] + 1}')
+    ax.set_title(f'CDF Field for Joint Pair {joint_pair}')
 
-    print(f"CDF field plot saved as '{save_path}'")
 
 def main():
-    trained_model_path = "trained_models/cdf_models/cdf_model_zeroconfigs_2_links_best.pt"
+    trained_model_path = "trained_models/cdf_models/cdf_model_4_links.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_learned_cdf(trained_model_path).to(device)
 
-    link_lengths = np.array([2.0, 2.0])  # Assuming 2 links of length 2
     obstacle = np.array([1.5, 1.5, 0])  # Example obstacle position
 
-    plot_cdf_field(model, device, link_lengths, obstacle)
+    num_links = infer_num_links(trained_model_path)
+    joint_pairs = [(i, j) for i in range(num_links) for j in range(i + 1, num_links)]
+    num_plots = len(joint_pairs)
+
+    # Calculate grid dimensions
+    cols = 2
+    rows = (num_plots + cols - 1) // cols  # Ceiling division to determine rows
+
+    # Set figsize to ensure square subplots
+    fig, axs = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+    axs = axs.ravel()
+
+    for i, joint_pair in enumerate(joint_pairs):
+        plot_cdf_field(axs[i], model, device, joint_pair, num_links, obstacle)
+
+    # Hide any unused subplots
+    for j in range(i + 1, len(axs)):
+        fig.delaxes(axs[j])
+
+    plt.tight_layout()
+    plt.savefig('cdf_field.png')
+    plt.close()
+
+    print("CDF field plot saved as 'cdf_field.png'")
 
 if __name__ == "__main__":
     main()
+
+
+
+

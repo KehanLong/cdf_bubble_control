@@ -2,10 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import jax.numpy as jnp
 from typing import List, Tuple, Optional
-from arm_2d_utils import forward_kinematics, transform_shape, generate_robot_point_cloud, calculate_arm_sdf
 from data.arm_2d_config import NUM_LINKS, shapes
 import random
-from arm_2d_cdf_simplified import SimpleCDF2D
 from jax import vmap, jit
 
 def create_circle(center: Tuple[float, float], radius: float, num_points: int = 100) -> np.ndarray:
@@ -47,10 +45,10 @@ def create_obstacles(num_points: int = 100, rng=None) -> List[np.ndarray]:
     
     def random_position(quadrant):
         x_range, y_range = {
-            1: ((2, 4), (2, 4)),
-            2: ((-5, -1), (1, 5)),
-            3: ((-4, -2), (-5, -2)),
-            4: ((2, 5), (-6, -3))
+            1: ((2, 3), (2, 3)),
+            2: ((-7, -6), (1.5, 2.5)),
+            3: ((-4, -2), (5, 6)),
+            4: ((-0.5, 0.5), (3, 4))
         }[quadrant]
         return rng.uniform(*x_range), rng.uniform(*y_range)
 
@@ -110,8 +108,7 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
     #     ax.plot(joint_pos[0], joint_pos[1], 'ko', markersize=8)
 
 
-    cdf = SimpleCDF2D([2, 2])
-    arm_x, arm_y = cdf.forward_kinematics(arm_angles)
+    arm_x, arm_y = forward_kinematics(arm_angles)
     # Plot the arm as a single line
     ax.plot(arm_x, arm_y, 'b-', linewidth=2, label='Robot Arm')
     
@@ -120,9 +117,9 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
     ax.plot(arm_x[1:-1], arm_y[1:-1], 'ko', markersize=8, label='Joints')
     ax.plot(arm_x[-1], arm_y[-1], 'go', markersize=8, label='End effector')
 
-
-    ax.set_xlim(-5, 5)
-    ax.set_ylim(-5, 5)
+    num_links = arm_angles.shape[0]
+    ax.set_xlim(-num_links * 2 -2 , num_links * 2 + 2)
+    ax.set_ylim(-num_links * 2 -2 , num_links * 2 + 2)
     ax.set_aspect('equal')
     ax.grid(True)
     ax.set_title('Robot Arm, Obstacles, and Point Cloud Observations')
@@ -137,52 +134,6 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray, ax: Op
     #     plt.show()
     
     return fig, ax
-
-def visualize_sdf_theta1_theta2(params_list, obstacles, resolution=200, save_path='sdf_theta1_theta2_visualization.png'):
-    fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
-    
-    # Generate angles for theta1 and theta2
-    theta1_range = np.linspace(-np.pi, np.pi, resolution)
-    theta2_range = np.linspace(-np.pi, np.pi, resolution)
-    theta1_mesh, theta2_mesh = np.meshgrid(theta1_range, theta2_range)
-    
-    # Flatten the meshgrid for vectorized computation
-    theta1_flat = theta1_mesh.flatten()
-    theta2_flat = theta2_mesh.flatten()
-    
-    # Create angles array with only two angles
-    angles_flat = jnp.column_stack((theta1_flat, theta2_flat))
-    
-    # Combine all obstacle points
-    all_obstacle_points = jnp.concatenate(obstacles, axis=0)
-    
-    # Compute SDF for all configurations
-    sdf_values = []
-    for angles in angles_flat:
-        # Calculate SDF for all obstacle points
-        distances, _ = calculate_arm_sdf(all_obstacle_points, angles, params_list)
-        # Take the minimum distance as the SDF value for this configuration
-        sdf_values.append(jnp.min(distances))
-    
-    sdf_values = jnp.array(sdf_values).reshape(resolution, resolution)
-    
-    # Plot the heatmap
-    heatmap = ax.imshow(sdf_values, extent=[-np.pi, np.pi, -np.pi, np.pi], origin='lower', 
-                        aspect='auto', cmap='viridis')
-    contour = ax.contour(theta1_mesh, theta2_mesh, sdf_values, levels=[0], colors='red', linewidths=2)
-    
-    ax.set_xlabel('Theta 1 (radians)')
-    ax.set_ylabel('Theta 2 (radians)')
-    ax.set_title('SDF Visualization for Theta 1 and Theta 2')
-    
-    cbar = fig.colorbar(heatmap, ax=ax)
-    cbar.set_label('Minimum SDF Value')
-    
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"Figure saved as {save_path}")
-    # plt.show()
 
 def visualize_simple_sdf_theta1_theta2(obstacles, resolution=200, save_path='simple_sdf_theta1_theta2_visualization.png'):
     fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
@@ -251,7 +202,24 @@ def visualize_simple_sdf_theta1_theta2(obstacles, resolution=200, save_path='sim
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Figure saved as {save_path}")
 
-
+@jit
+def forward_kinematics(joint_angles):
+    num_links = len(joint_angles)
+    link_length = 2.0  # Assuming each link has a length of 2 units
+    
+    # Initialize arrays to store x and y coordinates
+    x = jnp.zeros(num_links + 1)
+    y = jnp.zeros(num_links + 1)
+    
+    # Calculate cumulative angle
+    cumulative_angle = jnp.cumsum(joint_angles)
+    
+    # Calculate x and y positions for each joint
+    for i in range(1, num_links + 1):
+        x = x.at[i].set(x[i-1] + link_length * jnp.cos(jnp.sum(joint_angles[:i])))
+        y = y.at[i].set(y[i-1] + link_length * jnp.sin(jnp.sum(joint_angles[:i])))
+    
+    return x, y
 
 def main():
 
@@ -285,4 +253,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

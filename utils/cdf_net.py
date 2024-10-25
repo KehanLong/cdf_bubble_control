@@ -44,7 +44,9 @@ class CDF_Net(nn.Module):
 
             setattr(self, f"lin{layer}", lin)
 
-        self.activation = nn.Softplus(beta=beta) if beta > 0 else nn.ReLU()
+        #self.activation = nn.Softplus(beta=beta) if beta > 0 else nn.ReLU()
+
+        self.activation = nn.ReLU()
         
     def forward(self, x):
         input = x
@@ -59,61 +61,36 @@ class CDF_Net(nn.Module):
 
 
 
-import jax
 import jax.numpy as jnp
 from flax import linen as lnn
-from typing import Sequence, Tuple, Any
-
-class CustomDense(lnn.Module):
-    features: int
-    use_bias: bool = True
-
-    @lnn.compact
-    def __call__(self, inputs):
-        kernel = self.variable('params', 'kernel', lambda: None)
-        bias = self.variable('params', 'bias', lambda: None)
-        print(f"CustomDense input shape: {inputs.shape}, kernel shape: {kernel.value.shape}")
-        y = jnp.dot(inputs, kernel.value.T)
-        if self.use_bias:
-            y += bias.value
-        print(f"CustomDense output shape: {y.shape}")
-        return y
+from typing import Sequence, Tuple
 
 class CDFNet_JAX(lnn.Module):
     input_dims: int
     hidden_dims: Sequence[int]
     output_dims: int = 1
     skip_in: Tuple[int] = (4,)
-    beta: float = 100
     use_skip_connections: bool = True
-
-    @staticmethod
-    def custom_softplus(x, beta):
-        return (1.0 / beta) * jnp.log(1 + jnp.exp(beta * x))
 
     @lnn.compact
     def __call__(self, x):
-        print(f"Input shape: {x.shape}")
         input_x = x
         dims = [self.input_dims] + list(self.hidden_dims) + [self.output_dims]
         num_layers = len(dims)
-        skip_in = self.skip_in if self.use_skip_connections else ()
 
         for layer in range(num_layers - 1):
-            print(f"Layer {layer}, input shape: {x.shape}")
+            if layer + 1 in self.skip_in:
+                out_dim = dims[layer + 1] - self.input_dims
+            else:
+                out_dim = dims[layer + 1]
             
-            out_dim = dims[layer + 1]
-            lin = CustomDense(features=out_dim)
-            x = lin(x)
+            x = lnn.Dense(out_dim)(x)
 
             if layer < num_layers - 2:
-                x = self.custom_softplus(x, self.beta) if self.beta > 0 else jax.nn.relu(x)
+                x = lnn.relu(x)
             
-            if layer + 1 in skip_in:
+            if layer + 1 in self.skip_in:
                 x = jnp.concatenate([x, input_x], axis=-1)
-                print(f"After skip connection, shape: {x.shape}")
-            
-            print(f"Layer {layer} output shape: {x.shape}")
 
         return x
 

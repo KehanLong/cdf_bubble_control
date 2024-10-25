@@ -104,66 +104,6 @@ def concatenate_obstacle_list(obstacle_list):
     """
     return np.concatenate(obstacle_list, axis=0)
 
-def visualize_cdf_theta1_theta2(model, device, obstacles, resolution=200, batch_size=1000, num_bubbles=10, save_path='cdf_theta1_theta2_visualization.png'):
-    fig, ax = plt.subplots(figsize=(15, 10), dpi=300)
-    
-    # Generate angles for theta1 and theta2
-    theta1_range = np.linspace(-np.pi, np.pi, resolution)
-    theta2_range = np.linspace(-np.pi, np.pi, resolution)
-    theta1_mesh, theta2_mesh = np.meshgrid(theta1_range, theta2_range)
-    
-    # Flatten the meshgrid
-    configs = np.column_stack((theta1_mesh.flatten(), theta2_mesh.flatten()))
-    
-    
-    # Process in batches
-    cdf_values = []
-    for i in range(0, len(configs), batch_size):
-        batch_configs = configs[i:i+batch_size]
-        batch_cdf_values = cdf_evaluate_model(model, batch_configs, obstacles, device)
-        cdf_values.append(batch_cdf_values)
-    
-    cdf_values = np.concatenate(cdf_values)
-    cdf_values = np.min(cdf_values, axis=1).reshape(resolution, resolution)
-    
-    # Plot the heatmap
-    contour = ax.contourf(theta1_mesh, theta2_mesh, cdf_values, levels=20, cmap='viridis')
-    contour = ax.contour(theta1_mesh, theta2_mesh, cdf_values, levels=[0.1], colors='red', linewidths=2)
-    
-    # Generate random points for bubbles
-    random_theta1 = np.random.uniform(-np.pi + 0.2, np.pi - 0.2, num_bubbles)
-    random_theta2 = np.random.uniform(-np.pi + 0.2, np.pi - 0.2, num_bubbles)
-    random_points = np.column_stack((random_theta1, random_theta2))
-    
-    # Compute CDF values for random points
-    random_cdf_values = cdf_evaluate_model(model, random_points, obstacles, device)
-    random_cdf_values = np.min(random_cdf_values, axis=1)
-    
-    # Create a clip path
-    clip_rect = Rectangle((-np.pi, -np.pi), 2*np.pi, 2*np.pi, fill=False)
-    ax.add_patch(clip_rect)
-    
-    # Plot bubbles
-    for point, cdf_value in zip(random_points, random_cdf_values):
-        if cdf_value > 0.05:
-            circle = Circle(point, cdf_value - 0.05, fill=False, color='red', alpha=0.5, clip_path=clip_rect)
-            ax.add_patch(circle)
-    
-    ax.set_xlabel('Theta 1 (radians)')
-    ax.set_ylabel('Theta 2 (radians)')
-    ax.set_title('CDF Visualization for Theta 1 and Theta 2')
-    
-    # Set aspect ratio to be equal
-    ax.set_aspect('equal', adjustable='box')
-    
-    # Set the limits explicitly
-    ax.set_xlim(-np.pi, np.pi)
-    ax.set_ylim(-np.pi, np.pi)
-    
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"Figure saved as {save_path}")
     # plt.show()
 
 def plan_path(cdf, initial_config: np.ndarray, goal_config: np.ndarray):
@@ -237,7 +177,7 @@ def plan_path(cdf, initial_config: np.ndarray, goal_config: np.ndarray):
 
 if __name__ == "__main__":
     __spec__ = None
-    trained_model_path = "trained_models/cdf_models/cdf_model_zeroconfigs_2_links_best.pt"  # Adjust path as needed
+    trained_model_path = "trained_models/cdf_models/cdf_model_2_links.pt"  # Adjust path as needed, 2_links or 4_links
     torch_model = load_learned_cdf(trained_model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -251,9 +191,6 @@ if __name__ == "__main__":
 
     # Visualize SDF for theta1 and theta2
     visualize_simple_sdf_theta1_theta2(obstacles)
-
-    # Visualize CDF for theta1 and theta2 with bubbles
-    visualize_cdf_theta1_theta2(cdf.model, cdf.device, cdf.obstacle_points, num_bubbles=100)
 
 
     # Set initial and goal configurations

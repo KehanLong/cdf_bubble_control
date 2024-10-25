@@ -248,7 +248,6 @@ def main():
     
     num_links = len(configurations[0])
     input_dims = num_links * 3 + 2  # Changed to account for raw angles, sin, cos, and 2D point
-    output_dims = 1
     model = CDF_Net(input_dims=input_dims, hidden_dims=[512, 512, 512, 512], skip_in=[4], geometric_init=True).cuda()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -263,7 +262,7 @@ def main():
     obstacle = np.array([1.5, 1.5, 0])
     plot_cdf_field(trained_model, device, link_lengths, obstacle)
 
-    torch.save(trained_model.state_dict(), f"trained_models/cdf_models/cdf_model_zeroconfigs_2_links_best.pt")
+    torch.save(trained_model.state_dict(), f"trained_models/cdf_models/cdf_model_2_links.pt")
     print("Saved best trained CDF model")
 
 if __name__ == "__main__":

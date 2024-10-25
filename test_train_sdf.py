@@ -98,13 +98,20 @@ def train_sdf_net(model, optimizer, num_epochs, batch_size, points, normals, sam
         
         # Use PyTorch's autograd for gradient computation
         mnfld_grad = torch.autograd.grad(mnfld_pred.sum(), batch_points, create_graph=True)[0]
-        nonmnfld_grad = torch.autograd.grad(nonmnfld_pred.sum(), nonmnfld_points, create_graph=True)[0]
+        nonmnfld_grad = torch.autograd.grad(nonmnfld_pred, nonmnfld_points, grad_outputs=torch.ones_like(nonmnfld_pred), create_graph=True)[0]
+
+
+        # Compute the new GD2S loss
+        gd2s_points = nonmnfld_points - nonmnfld_pred.detach() * nonmnfld_grad
+        gd2s_pred = model(gd2s_points)
+        gd2s_loss = torch.mean(gd2s_pred.abs())
         
         mnfld_loss = torch.mean(mnfld_pred.abs())
         eikonal_loss = torch.mean((nonmnfld_grad.norm(2, dim=-1) - 1) ** 2)
         normal_loss = torch.mean((mnfld_grad - batch_normals).abs().norm(2, dim=1))
         
-        loss = mnfld_loss + 0.1 * eikonal_loss 
+        # Add the new GD2S loss to the total loss
+        loss = mnfld_loss + 0.1 * eikonal_loss + 0.1 * gd2s_loss
         
         optimizer.zero_grad()
         loss.backward()
@@ -113,7 +120,7 @@ def train_sdf_net(model, optimizer, num_epochs, batch_size, points, normals, sam
         if (epoch + 1) % 100 == 0:
             print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}, "
                   f"Manifold Loss: {mnfld_loss.item():.4f}, Eikonal Loss: {eikonal_loss.item():.4f}, "
-                  f"Normal Loss: {normal_loss.item():.4f}")
+                  f"Normal Loss: {normal_loss.item():.4f}, GD2S Loss: {gd2s_loss.item():.4f}")
         
         # Early stopping condition
         if loss.item() < early_stop_threshold:
@@ -153,12 +160,12 @@ def plot_sdf(model, points, normals, a=1.0, b=0.5, center_x=1.0, center_y=1.0, n
     plt.plot(x_true, y_true, 'r--', linewidth=2, label='True Ellipse')
     
     # Plot a subset of the computed normals
-    indices = np.linspace(0, len(points) - 1, num_normals_to_plot, dtype=int)
-    normal_scale = 0.2
-    plt.quiver(points[indices, 0], points[indices, 1], 
-               normals[indices, 0], normals[indices, 1], 
-               color='g', scale=1/normal_scale, width=0.003, 
-               label='Computed Normals')
+    # indices = np.linspace(0, len(points) - 1, num_normals_to_plot, dtype=int)
+    # normal_scale = 0.2
+    # plt.quiver(points[indices, 0], points[indices, 1], 
+    #            normals[indices, 0], normals[indices, 1], 
+    #            color='g', scale=1/normal_scale, width=0.003, 
+    #            label='Computed Normals')
     
     plt.legend()
     plt.axis('equal')
@@ -167,8 +174,8 @@ def plot_sdf(model, points, normals, a=1.0, b=0.5, center_x=1.0, center_y=1.0, n
 
 if __name__ == "__main__":
     # Hyperparameters
-    num_points = 3000
-    num_epochs = 3000
+    num_points = 2000
+    num_epochs = 2000
     batch_size = 128
     learning_rate = 0.0015
     a, b = 1.0, 0.5
