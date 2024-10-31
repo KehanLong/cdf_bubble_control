@@ -1,121 +1,122 @@
-import os
 import pybullet as p
 import pybullet_data
+import numpy as np
 import time
+import os
 
-
-def compute_point_to_robot_distance(robot_id, point, joint_angles=None, visualize=False):
-    """
-    Compute the minimum distance from a point to any part of the robot.
-    
-    Args:
-        robot_id: PyBullet body ID for the robot
-        point: [x, y, z] coordinates of the query point
-        joint_angles: Optional list of joint angles. If provided, robot will be set to this configuration
-        visualize: If True, draw a line showing the closest points
-    
-    Returns:
-        distance: Minimum distance from point to robot
-    """
-    if joint_angles is not None:
-        for i, angle in enumerate(joint_angles):
-            p.resetJointState(robot_id, i, angle)
-    
-    # Create a temporary sphere at the query point
-    collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=0.001)
-    point_body = p.createMultiBody(
-        baseMass=0,
-        baseCollisionShapeIndex=collision_shape,
-        basePosition=point
-    )
-    
-    closest_points = p.getClosestPoints(robot_id, point_body, distance=100.0)
-    min_distance = float('inf')
-    closest_point_on_robot = None
-    closest_point_on_sphere = None
-    
-    if closest_points:
-        min_distance = closest_points[0][8]
-        closest_point_on_robot = closest_points[0][5]
-        closest_point_on_sphere = closest_points[0][6]
+class RobotDistanceComputer:
+    def __init__(self):
+        # Start main GUI physics server
+        self.gui_id = p.connect(p.GUI)
+        p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING, 0)  # Disable object manipulation
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1)
         
-        if visualize:
-            # Remove any existing debug lines (if any)
-            p.removeAllUserDebugItems()
-            # Draw a line between the closest points (green color)
-            p.addUserDebugLine(
-                closest_point_on_robot,
-                closest_point_on_sphere,
-                lineColorRGB=[0, 1, 0],
-                lineWidth=2,
-                lifeTime=0  # 0 means permanent until removed
-            )
+        # Start separate collision checking server
+        self.col_id = p.connect(p.DIRECT)
+        
+        # Load robot in both servers
+        self.robot_gui, self.robot_col = self._load_robots()
+        
+    def _load_robots(self):
+        # Load robot in GUI server
+        p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.gui_id)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        urdf_path = os.path.join(current_dir, "xarm", "xarm6_robot.urdf")
+        
+        robot_gui = p.loadURDF(urdf_path, useFixedBase=1, physicsClientId=self.gui_id)
+        robot_col = p.loadURDF(urdf_path, useFixedBase=1, physicsClientId=self.col_id)
+        
+        return robot_gui, robot_col
     
-    p.removeBody(point_body)
-    p.removeCollisionShape(collision_shape)
-    
-    return min_distance
+    def compute_distance(self, point, joint_angles=None, visualize=False):
+        """
+        Compute distance from a point to the robot in a given configuration
+        """
+        # Set robot configuration in both servers
+        if joint_angles is not None:
+            for i, angle in enumerate(joint_angles):
+                p.resetJointState(self.robot_gui, i, angle, physicsClientId=self.gui_id)
+                p.resetJointState(self.robot_col, i, angle, physicsClientId=self.col_id)
+        
+        # Create temporary sphere for distance computation
+        collision_shape = p.createCollisionShape(
+            p.GEOM_SPHERE, 
+            radius=0.001, 
+            physicsClientId=self.col_id
+        )
+        point_body = p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=collision_shape,
+            basePosition=point,
+            physicsClientId=self.col_id
+        )
+        
+        # Compute closest points
+        closest_points = p.getClosestPoints(
+            self.robot_col, 
+            point_body, 
+            distance=100.0,
+            physicsClientId=self.col_id
+        )
+        
+        min_distance = float('inf')
+        if closest_points:
+            min_distance = closest_points[0][8]
+            if visualize:
+                # Visualize in GUI server
+                p.removeAllUserDebugItems(physicsClientId=self.gui_id)
+                p.addUserDebugLine(
+                    closest_points[0][5],  # pointA
+                    closest_points[0][6],  # pointB
+                    [0, 1, 0],  # color
+                    2,  # line width
+                    0,  # lifetime
+                    physicsClientId=self.gui_id
+                )
+        
+        # Cleanup
+        p.removeBody(point_body, physicsClientId=self.col_id)
+        p.removeCollisionShape(collision_shape, physicsClientId=self.col_id)
+        
+        return min_distance
 
 def test_distance_computation():
-    # Initialize PyBullet
-    physicsClient = p.connect(p.GUI)
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
-    p.setGravity(0, 0, -9.81)
-    planeId = p.loadURDF("plane.urdf")
+    computer = RobotDistanceComputer()
     
-    # Load the robot URDF
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(current_dir, "xarm", "xarm6_robot.urdf")
-    robotId = p.loadURDF(urdf_path, useFixedBase=1)
-    
-    # Test some points with known distances
+    # Test points
     test_points = [
-        [0.5, 0.0, 0.5],   # Point somewhat in front of robot
-        [0.3, 0.3, 0.3],   # Point closer to robot
-        [1.0, 1.0, 1.0],   # Point far from robot
-        [0.0, 0.0, 0.0],   # Origin point (should be very close to robot base)
-        [0.2, 0.0, 0.0],   # Point near robot base
+        [0.5, 0.0, 0.5],
+        [0.3, 0.3, 0.3],
+        [1.0, 1.0, 1.0],
+        [0.0, 0.0, 0.0],
     ]
     
-    # Set robot to home configuration
-    home_angles = [0.0] * 6  # Assuming 6-DOF robot
-    
-    # Disable mouse picking and enable camera control
-    #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING, 0)  # Disable object manipulation
-    #p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1)  # Enable GUI controls
-    
-    # Set initial camera view
-    p.resetDebugVisualizerCamera(
-        cameraDistance=2.0,
-        cameraYaw=45,
-        cameraPitch=-30,
-        cameraTargetPosition=[0, 0, 0]
-    )
-    
-    # Visualize test points and compute distances
-    for point in test_points:
-        # Add visual marker for test point
-        visual_shape_id = p.createVisualShape(
-            shapeType=p.GEOM_SPHERE,
-            radius=0.02,
-            rgbaColor=[1, 0, 0, 1]
-        )
-        p.createMultiBody(
-            baseMass=0,
-            baseVisualShapeIndex=visual_shape_id,
-            basePosition=point
-        )
-        
-        # Compute and print distance
-        distance = compute_point_to_robot_distance(robotId, point, home_angles, visualize=True)
-        print(f"Distance to point {point}: {distance:.3f} meters")
-    
-    print("\nTest points visualized as red spheres.")
-    print("Press Ctrl+C to exit.")
-    
+    # Test different configurations
     while True:
-        p.stepSimulation()
-        time.sleep(0.1)
+        # Random configuration
+        q = np.pi * (np.random.random(6) - 0.5)
+        
+        for point in test_points:
+            # Visualize test point
+            visual_shape = p.createVisualShape(
+                shapeType=p.GEOM_SPHERE,
+                radius=0.02,
+                rgbaColor=[1, 0, 0, 1],
+                physicsClientId=computer.gui_id
+            )
+            p.createMultiBody(
+                baseMass=0,
+                baseVisualShapeIndex=visual_shape,
+                basePosition=point,
+                physicsClientId=computer.gui_id
+            )
+            
+            # Compute and show distance
+            dist = computer.compute_distance(point, q, visualize=True)
+            print(f"Distance to point {point}: {dist:.3f}")
+        
+        input("Press Enter for next configuration...")
+        p.removeAllUserDebugItems(physicsClientId=computer.gui_id)
 
 if __name__ == "__main__":
     test_distance_computation()
