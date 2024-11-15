@@ -151,7 +151,9 @@ dependencies:
       - argparse==1.4.0
       - cfgv==3.4.0
       - chex==0.1.86
+      - clarabel==0.9.0
       - colored==2.2.4
+      - cvxpy==1.6.0
       - distlib==0.3.9
       - etils==1.9.2
       - flax==0.8.5
@@ -160,6 +162,7 @@ dependencies:
       - future==1.0.0
       - humanize==4.10.0
       - identify==2.6.1
+      - igraph==0.11.8
       - imageio==2.35.1
       - imageio-ffmpeg==0.5.1
       - jax==0.4.31
@@ -190,8 +193,11 @@ dependencies:
       - opt-einsum==3.3.0
       - optax==0.2.3
       - orbax-checkpoint==0.6.0
+      - osqp==0.6.7.post3
       - pgraph-python==0.6.2
       - platformdirs==4.3.6
+      - plyfile==1.1
+      - polyscope==2.3.0
       - pre-commit==4.0.1
       - progress==1.6
       - protobuf==5.27.3
@@ -203,16 +209,19 @@ dependencies:
       - pyopengl==3.1.0
       - pyrender==0.1.45
       - pytorch-minimize==0.0.2
+      - qdldl==0.1.7.post4
       - rich==13.7.1
       - roboticstoolbox-python==1.1.1
       - rtb-data==1.0.1
       - scikit-image==0.24.0
       - scikit-learn==1.5.2
       - scipy==1.14.1
+      - scs==3.2.7
       - spatialgeometry==1.1.0
       - spatialmath-python==1.1.13
       - swift-sim==1.1.0
       - tensorstore==0.1.64
+      - texttable==1.7.0
       - threadpoolctl==3.5.0
       - tifffile==2024.9.20
       - toolz==0.12.1

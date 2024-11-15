@@ -148,7 +148,7 @@ class CDFVisualizer:
             textSize=1.5
         )
         
-        print(f"Minimum distance to obstacles: {min_dist:.3f}")
+        #print(f"Minimum distance to obstacles: {min_dist:.3f}")
     
     def create_target_marker(self):
         """Create a visual marker for the target position"""
