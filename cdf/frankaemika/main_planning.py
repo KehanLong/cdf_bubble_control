@@ -31,7 +31,7 @@ class CDFVisualizer:
         self.prev_closest_visual = None
         
         # Add these new parameters
-        self.target_pos = np.array([0, 0.6, 0.5])  # Target position
+        self.target_pos = np.array([0.4, 0.5, 0.6])  # Target position
         self.end_effector_index = 7  # Franka's end effector link index
         
         # Create visual marker for target position
