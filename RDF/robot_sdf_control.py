@@ -83,12 +83,12 @@ class PointTrajectoryManager:
             # Initialize random velocities for other points
             velocities_random = torch.randn(num_points-1, 3).to(device)
             # Normalize velocities and scale them
-            self.velocities[1:] = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.2
+            self.velocities[1:] = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.15
         else:
             # Initialize all velocities randomly
             velocities_random = torch.randn(num_points, 3).to(device)
             # Normalize velocities and scale them
-            self.velocities = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.2
+            self.velocities = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.15
 
     def update_positions(self, dt):
         """Update positions based on velocities and handle boundary conditions"""
@@ -513,4 +513,4 @@ if __name__ == "__main__":
     
     # Create visualizer with specified controller mode, cbf_qp or dro_cbf_qp
     visualizer = RobotSDFVisualizer(goal_config, use_gui=False, controller_mode='dro_cbf_qp')
-    goal_dists, sdf_dists = visualizer.run_demo(duration=10.0)
+    goal_dists, sdf_dists = visualizer.run_demo(duration=16.0)

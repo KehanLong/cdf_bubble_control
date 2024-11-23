@@ -60,7 +60,7 @@ class CbfDroController:
             self.wasserstein_r * cp.abs(stacked_vector) / self.epsilon <= 
                 (t - (1/N) * cp.sum(si) / self.epsilon) * np.ones((num_joints + 2, 1)),
             si >= 0,
-            cp.abs(u) <= 2.0,  # Velocity limits
+            cp.abs(u) <= 3.0,  # Velocity limits
             slack >= 0.0,
         ]
         
