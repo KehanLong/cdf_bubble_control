@@ -37,10 +37,12 @@ class CbfDroController:
         si = cp.Variable(N)
         t = cp.Variable(1)
 
+        slack = cp.Variable(1)
+
         # Reshape for DRO constraints
-        one_vector = cp.reshape(np.array([1]), (1, 1))
-        rateh_vector = cp.reshape(np.array([self.rateh]), (1, 1))
-        u_reshaped = cp.reshape(u, (num_joints, 1))
+        one_vector = cp.reshape(np.array([1]), (1, 1), order='C')
+        rateh_vector = cp.reshape(np.array([self.rateh]), (1, 1), order='C')
+        u_reshaped = cp.reshape(u, (num_joints, 1), order='C')
         stacked_vector = cp.vstack([one_vector, rateh_vector, u_reshaped])
 
         # Create q_samples for DRO
@@ -58,25 +60,31 @@ class CbfDroController:
             self.wasserstein_r * cp.abs(stacked_vector) / self.epsilon <= 
                 (t - (1/N) * cp.sum(si) / self.epsilon) * np.ones((num_joints + 2, 1)),
             si >= 0,
-            cp.abs(u) <= 2.0  # Velocity limits
+            cp.abs(u) <= 2.0,  # Velocity limits
+            slack >= 0.0,
         ]
         
         # Add individual sample constraints
         for i in range(N):
             constraints.append(
-                si[i] >= t - stacked_vector.T @ q_samples[i]
+                si[i] >= t - stacked_vector.T @ q_samples[i] - slack
             )
 
         # Objective: Minimize deviation from nominal control
         # obj = cp.Minimize(cp.norm(nominal_u - u) ** 2 + self.p1 * cp.norm(self.prev_u - u) ** 2)
 
-        obj = cp.Minimize(cp.norm(nominal_u - u) ** 2)
+        obj = cp.Minimize(cp.norm(nominal_u - u) ** 2 + 1e3 * slack)
 
         # Solve QP
         prob = cp.Problem(obj, constraints)
         
         try:
             prob.solve(solver=cp.CLARABEL, verbose=False)
+
+            if prob.status == "optimal" or prob.status == "optimal_inaccurate":
+                print('cbf_h_samples:', cbf_h_samples)
+                print('slack:', slack.value)
+                
 
             if prob.status == "optimal" or prob.status == "optimal_inaccurate":
                 self.solve_fail = False

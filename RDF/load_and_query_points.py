@@ -102,4 +102,4 @@ if __name__ == "__main__":
             print(f"Gradient: {gradients[j].cpu().numpy()}")
         
         # Visualize this configuration
-        controller.visualize_configuration(test_points, robot_pose, joints, sdf)
+        # controller.visualize_configuration(test_points, robot_pose, joints, sdf)

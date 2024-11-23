@@ -19,74 +19,103 @@ def plot_distances(goal_distances, estimated_obstacle_distances, obst_radius, dt
     # Plot distance to goal as blue dotted line
     plt.plot(time_steps, goal_distances, color='red', linestyle=':', linewidth=3, label='Distance to Goal')
 
-    # Remove the extra dimension if it exists
-    if estimated_obstacle_distances.ndim == 3:
-        estimated_obstacle_distances = estimated_obstacle_distances.squeeze(1)
+    # Handle both single and multiple obstacles
+    if estimated_obstacle_distances.ndim == 1:
+        # Single obstacle case
+        plt.plot(time_steps, estimated_obstacle_distances, linewidth=3, label='Distance to Obstacle')
+    else:
+        # Multiple obstacles case
+        # Remove the extra dimension if it exists
+        if estimated_obstacle_distances.ndim == 3:
+            estimated_obstacle_distances = estimated_obstacle_distances.squeeze(1)
+        
+        num_obstacles = estimated_obstacle_distances.shape[1]
+        for i in range(num_obstacles):
+            if i == 0:
+                plt.plot(time_steps, estimated_obstacle_distances[:, i], linewidth=3, label='Distance to Obstacles')
+            else:
+                plt.plot(time_steps, estimated_obstacle_distances[:, i], linewidth=3)
     
-    num_obstacles = estimated_obstacle_distances.shape[1]
-
-
-    for i in range(num_obstacles):
-        if i == 0:
-            plt.plot(time_steps, estimated_obstacle_distances[:, i], linewidth=3, label='Distance to Obstacles')
-        else:
-            plt.plot(time_steps, estimated_obstacle_distances[:, i], linewidth=3)
-    
-    plt.axhline(y=obst_radius, color='black', linestyle='--', linewidth=3, label='Safety Margin')
+    #plt.axhline(y=obst_radius, color='black', linestyle='--', linewidth=3, label='Safety Margin')
     
     plt.xlabel('Time (s)', fontsize=18)
     plt.ylabel('Distance', fontsize=18)
-    # plt.title('Distances to Goal and Estimated Distances to Obstacles over Time')
 
     # Set tick label size to 16
     plt.xticks(fontsize=18)
     plt.yticks(fontsize=18)
-
     plt.legend(fontsize=18, loc='upper right')
-
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.close()
 
 class PointTrajectoryManager:
-    def __init__(self, num_points=10, device='cuda', bounds=None):
+    def __init__(self, num_points=10, device='cuda', bounds=None, debug_mode=False):
         self.num_points = num_points
         self.device = device
-        
+        self.debug_mode = debug_mode
         # Define bounds for position [min_x, max_x, min_y, max_y, min_z, max_z]
         self.bounds = bounds if bounds is not None else torch.tensor([-1.5, 1.5, -1.5, 1.5, 0, 1.5])
         
-        # Initialize random positions within bounds
+        # Initialize positions: first point is fixed in debug mode, all random otherwise
         self.positions = torch.zeros((num_points, 3)).to(device)
-        for i in range(3):
-            self.positions[:, i] = torch.rand(num_points).to(device) * \
-                (self.bounds[i*2+1] - self.bounds[i*2]) + self.bounds[i*2]
         
-        # Initialize random velocities with unit norm
-        velocities = torch.randn(num_points, 3).to(device)
-        # Normalize velocities and scale them (0.5 means max speed of 0.5 units per second)
-        self.velocities = velocities / torch.norm(velocities, dim=1, keepdim=True) * 0.2
+        if debug_mode:
+            # Set first point to specified position (debugging obstacle)
+            self.positions[0] = torch.tensor([0.0, 0.8, 0.6]).to(device)
+            # Initialize rest of the points randomly
+            for i in range(3):
+                self.positions[1:, i] = torch.rand(num_points-1).to(device) * \
+                    (self.bounds[i*2+1] - self.bounds[i*2]) + self.bounds[i*2]
+        else:
+            # Initialize all points randomly
+            for i in range(3):
+                self.positions[:, i] = torch.rand(num_points).to(device) * \
+                    (self.bounds[i*2+1] - self.bounds[i*2]) + self.bounds[i*2]
+        
+        # Initialize velocities
+        self.velocities = torch.zeros((num_points, 3)).to(device)
+        
+        if debug_mode:
+            # Set first point velocity for debugging
+            self.velocities[0] = torch.tensor([0.0, -0.4, 0.0]).to(device)
+            # Initialize random velocities for other points
+            velocities_random = torch.randn(num_points-1, 3).to(device)
+            # Normalize velocities and scale them
+            self.velocities[1:] = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.2
+        else:
+            # Initialize all velocities randomly
+            velocities_random = torch.randn(num_points, 3).to(device)
+            # Normalize velocities and scale them
+            self.velocities = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.2
 
-        # zero velocities (static obstacles for testing)
-        # self.velocities = torch.zeros_like(self.velocities)
-        
     def update_positions(self, dt):
         """Update positions based on velocities and handle boundary conditions"""
         # Update positions
         new_positions = self.positions + self.velocities * dt
         
-        # Check bounds and reflect velocities if needed
+        # Special handling for first point only in debug mode
+        if self.debug_mode:
+            if new_positions[0, 1] < -0.8:  # If y position is below -0.8
+                new_positions[0, 1] = -0.8  # Stop at y = -0.8
+                self.velocities[0, 1] = 0.0  # Stop moving
+            elif new_positions[0, 1] > 0.8:  # If y position is above 0.8
+                new_positions[0, 1] = 0.8  # Stop at y = 0.8
+                self.velocities[0, 1] = -0.5  # Start moving down again
+        
+        # Handle bounds for all points (or all except first in debug mode)
+        start_idx = 1 if self.debug_mode else 0
         for i in range(3):
             # Check lower bound
-            mask_low = new_positions[:, i] < self.bounds[i*2]
-            new_positions[mask_low, i] = self.bounds[i*2]
-            self.velocities[mask_low, i] *= -1
+            mask_low = new_positions[start_idx:, i] < self.bounds[i*2]
+            new_positions[start_idx:][mask_low, i] = self.bounds[i*2]
+            self.velocities[start_idx:][mask_low, i] *= -1
             
             # Check upper bound
-            mask_high = new_positions[:, i] > self.bounds[i*2+1]
-            new_positions[mask_high, i] = self.bounds[i*2+1]
-            self.velocities[mask_high, i] *= -1
+            mask_high = new_positions[start_idx:, i] > self.bounds[i*2+1]
+            new_positions[start_idx:][mask_high, i] = self.bounds[i*2+1]
+            self.velocities[start_idx:][mask_high, i] *= -1
         
         self.positions = new_positions
         return self.positions
@@ -126,7 +155,7 @@ class RobotVelocityController:
         return joint_velocities
 
 class RobotSDFVisualizer:
-    def __init__(self, goal_config, use_gui=True, controller_mode='cbf_qp'):
+    def __init__(self, goal_config, use_gui=True, controller_mode='cbf_qp', debug_mode=False):
         # Initialize PyBullet
         if use_gui:
             self.physics_client = p.connect(p.GUI)
@@ -147,11 +176,12 @@ class RobotSDFVisualizer:
         # Initialize SDF query helper
         self.sdf_helper = SDFQueryHelper(device='cuda')
         
-        # Initialize point trajectory manager
+        # Initialize point trajectory manager with debug mode
         self.point_manager = PointTrajectoryManager(
             num_points=10,
             device='cuda',
-            bounds=torch.tensor([-1.0, 1.0, -1.0, 1.0, 0.2, 1.2])  # Adjusted bounds for robot workspace
+            bounds=torch.tensor([-1.0, 1.0, -1.0, 1.0, 0.2, 1.2]),
+            debug_mode=debug_mode
         )
         
         # Initialize both controllers
@@ -315,6 +345,8 @@ class RobotSDFVisualizer:
             
             # Get nominal control from PD controller
             nominal_velocities = self.pd_controller.compute_velocity_command(current_joints, self.goal_config, dt)
+
+            # nominal_velocities = np.zeros_like(nominal_velocities)
             
             # Get current point velocities
             point_velocities = self.point_manager.velocities  # Shape: (num_points, 3)
@@ -323,6 +355,7 @@ class RobotSDFVisualizer:
             robot_pose = torch.eye(4).unsqueeze(0).to(self.sdf_helper.device)
             sdf, sdf_grad = self.sdf_helper.query_sdf(points, robot_pose, 
                 torch.from_numpy(current_joints).unsqueeze(0).to(self.sdf_helper.device))
+            
             
             # Central difference for gradients w.r.t obstacles motions
             epsilon = 0.001
@@ -349,14 +382,30 @@ class RobotSDFVisualizer:
             alpha_h = self.safety_controller.rateh  # CBF parameter
             combined_values = sdf.cpu().numpy() * alpha_h + cbf_t_grads
             
-            # Get indices of 5 smallest values
-            min_indices = np.argpartition(combined_values, 5)[:5]
+            total_points = len(combined_values)
+            # Determine number of samples (minimum between 5 and total points)
+            num_samples = min(5, total_points)
+            
+            # If we have only one point or num_samples equals total points, 
+            # just use all indices directly
+            if num_samples == total_points:
+                min_indices = np.arange(total_points)
+            else:
+                # Get indices of num_samples smallest values
+                min_indices = np.argpartition(combined_values, num_samples)[:num_samples]
+
             
             if self.controller_mode == 'cbf_qp':
                 # Original CBF-QP control - use single minimum point
                 min_idx = min_indices[0]  # Take the absolute minimum
-                sdf_val = sdf[min_idx].cpu().numpy()
-                sdf_grad_min = sdf_grad[min_idx].cpu().numpy()
+                # Handle both single and multiple value cases
+                if len(sdf.shape) == 0:  # 0-dim tensor
+                    sdf_val = sdf.item()
+                    sdf_grad_min = sdf_grad.cpu().numpy()
+                else:  # multi-dim tensor
+                    sdf_val = sdf[min_idx].cpu().numpy()
+                    
+                    sdf_grad_min = sdf_grad[min_idx].cpu().numpy()
                 cbf_t_grad_min = cbf_t_grads[min_idx]
                 
                 safe_velocities = self.safety_controller.generate_control(
@@ -366,7 +415,7 @@ class RobotSDFVisualizer:
                     cbf_t_grad_min
                 )
             else:  # dro_cbf_qp
-                # Use 5 most critical points for DRO
+                # Use most critical points for DRO (up to 5)
                 cbf_h_samples = (sdf[min_indices].cpu().numpy() - 0.05)  # Apply safety margin
                 cbf_h_grad_samples = sdf_grad[min_indices].cpu().numpy()
                 cbf_t_grad_samples = cbf_t_grads[min_indices]
@@ -378,8 +427,7 @@ class RobotSDFVisualizer:
                     cbf_t_grad_samples
                 )
 
-            print('velocities_difference', safe_velocities - nominal_velocities)
-            print('distance_to_points:', sdf)
+            #print('velocities_difference', safe_velocities - nominal_velocities)
 
             # Apply safe velocities to robot
             for i in range(7):
@@ -463,6 +511,6 @@ if __name__ == "__main__":
     goal_config = np.array([1.68431763,  0.29743382, -0.65842076 ,-1.87699534, -2.26396217,  1.34391705,
                                    0.20779162], dtype=np.float32)
     
-    # Create visualizer with specified controller mode
+    # Create visualizer with specified controller mode, cbf_qp or dro_cbf_qp
     visualizer = RobotSDFVisualizer(goal_config, use_gui=False, controller_mode='dro_cbf_qp')
     goal_dists, sdf_dists = visualizer.run_demo(duration=10.0)

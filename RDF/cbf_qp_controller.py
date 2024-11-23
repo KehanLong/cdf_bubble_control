@@ -17,7 +17,7 @@ class CbfQpController:
         """
         Safety filter using CBF-QP
         Args:
-            nominal_u: nominal control input from PD controller
+            nominal_u: nominal control input 
             cbf_h_val: CBF value
             cbf_h_grad: gradient of CBF w.r.t. robot configuration
             cbf_t_grad: time derivative of CBF
@@ -33,19 +33,30 @@ class CbfQpController:
         # Control input variable
         u = cp.Variable(num_joints)
 
+        slack = cp.Variable(1)
+
+        adaptive_rate = self.rateh * (1 + np.exp(-cbf_h_val))
+
         # CBF constraint: hdot + α(h) ≥ 0
         constraints = [
-            cbf_h_grad @ u + cbf_t_grad + self.rateh * (cbf_h_val - 0.05) >= 0,  # Safety margin 0.05
+            cbf_h_grad @ u + cbf_t_grad + adaptive_rate * cbf_h_val >= -slack,  # Safety margin 0.05
+            slack >= 0.0,
             cp.abs(u) <= 2.0  # Velocity limits
         ]
 
         # Objective: Minimize deviation from nominal control
         # obj = cp.Minimize(cp.norm(nominal_u - u) ** 2 + self.p1 * cp.norm(self.prev_u - u) ** 2)
-        obj = cp.Minimize(cp.norm(nominal_u - u) ** 2)
+        obj = cp.Minimize(cp.norm(nominal_u - u) ** 2 + 1e3 * slack)
 
         # Solve QP
         prob = cp.Problem(obj, constraints)
         prob.solve(solver=cp.CLARABEL, verbose=False)
+        
+
+        if prob.status == "optimal" or prob.status == "optimal_inaccurate":
+            print('cbf_h_val:', cbf_h_val)
+            print('cbf_t_grad:', cbf_t_grad)
+            print('cbf_constraints:', cbf_h_grad @ u.value + cbf_t_grad + adaptive_rate * cbf_h_val)
 
         # Check solution
         if prob.status != "optimal":
