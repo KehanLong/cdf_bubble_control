@@ -2,7 +2,7 @@ import numpy as np
 import cvxpy as cp
 
 class CbfDroController:
-    def __init__(self, p1=1e0, cbf_rate=3.0, wasserstein_r=0.005, epsilon=0.1):
+    def __init__(self, p1=1e0, cbf_rate=3.0, wasserstein_r=0.01, epsilon=0.1):
         # Optimizer parameters
         self.p1 = p1
         self.rateh = cbf_rate

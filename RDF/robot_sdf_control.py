@@ -55,24 +55,13 @@ class PointTrajectoryManager:
         self.num_points = num_points
         self.device = device
         self.debug_mode = debug_mode
+        self.origin_radius = 0.3  # Radius of forbidden zone around origin
+        
         # Define bounds for position [min_x, max_x, min_y, max_y, min_z, max_z]
         self.bounds = bounds if bounds is not None else torch.tensor([-1.5, 1.5, -1.5, 1.5, 0, 1.5])
         
-        # Initialize positions: first point is fixed in debug mode, all random otherwise
-        self.positions = torch.zeros((num_points, 3)).to(device)
-        
-        if debug_mode:
-            # Set first point to specified position (debugging obstacle)
-            self.positions[0] = torch.tensor([0.0, 0.8, 0.6]).to(device)
-            # Initialize rest of the points randomly
-            for i in range(3):
-                self.positions[1:, i] = torch.rand(num_points-1).to(device) * \
-                    (self.bounds[i*2+1] - self.bounds[i*2]) + self.bounds[i*2]
-        else:
-            # Initialize all points randomly
-            for i in range(3):
-                self.positions[:, i] = torch.rand(num_points).to(device) * \
-                    (self.bounds[i*2+1] - self.bounds[i*2]) + self.bounds[i*2]
+        # Initialize positions with origin avoidance
+        self.positions = self._initialize_safe_positions()
         
         # Initialize velocities
         self.velocities = torch.zeros((num_points, 3)).to(device)
@@ -83,12 +72,51 @@ class PointTrajectoryManager:
             # Initialize random velocities for other points
             velocities_random = torch.randn(num_points-1, 3).to(device)
             # Normalize velocities and scale them
-            self.velocities[1:] = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.15
+            self.velocities[1:] = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.2
         else:
             # Initialize all velocities randomly
             velocities_random = torch.randn(num_points, 3).to(device)
             # Normalize velocities and scale them
-            self.velocities = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.15
+            self.velocities = velocities_random / torch.norm(velocities_random, dim=1, keepdim=True) * 0.2
+
+    def _initialize_safe_positions(self):
+        """Initialize positions ensuring points are outside the origin radius"""
+        positions = torch.zeros((self.num_points, 3)).to(self.device)
+        
+        if self.debug_mode:
+            # Set first point to specified position
+            positions[0] = torch.tensor([0.0, 0.8, 0.6]).to(self.device)
+            start_idx = 1
+        else:
+            start_idx = 0
+            
+        # Initialize remaining points
+        for i in range(start_idx, self.num_points):
+            while True:
+                # Generate random position within bounds
+                pos = torch.zeros(3).to(self.device)
+                for j in range(3):
+                    pos[j] = torch.rand(1).to(self.device) * \
+                        (self.bounds[j*2+1] - self.bounds[j*2]) + self.bounds[j*2]
+                
+                # Check distance from origin
+                dist_from_origin = torch.norm(pos)
+                if dist_from_origin > self.origin_radius:
+                    positions[i] = pos
+                    break
+                    
+        return positions
+
+    def _reflect_velocity_from_origin(self, position, velocity):
+        """Compute reflected velocity when hitting origin boundary"""
+        # Normalize position vector to get normal vector of sphere surface
+        normal = position / torch.norm(position)
+        
+        # Compute reflection using v_reflected = v - 2(v·n)n
+        dot_product = torch.dot(velocity, normal)
+        reflection = velocity - 2 * dot_product * normal
+        
+        return reflection
 
     def update_positions(self, dt):
         """Update positions based on velocities and handle boundary conditions"""
@@ -97,15 +125,24 @@ class PointTrajectoryManager:
         
         # Special handling for first point only in debug mode
         if self.debug_mode:
-            if new_positions[0, 1] < -0.8:  # If y position is below -0.8
-                new_positions[0, 1] = -0.8  # Stop at y = -0.8
-                self.velocities[0, 1] = 0.0  # Stop moving
-            elif new_positions[0, 1] > 0.8:  # If y position is above 0.8
-                new_positions[0, 1] = 0.8  # Stop at y = 0.8
-                self.velocities[0, 1] = -0.5  # Start moving down again
+            if new_positions[0, 1] < -0.8:
+                new_positions[0, 1] = -0.8
+                self.velocities[0, 1] = 0.0
+            elif new_positions[0, 1] > 0.8:
+                new_positions[0, 1] = 0.8
+                self.velocities[0, 1] = -0.5
         
-        # Handle bounds for all points (or all except first in debug mode)
+        # Handle origin avoidance for all points (except first in debug mode)
         start_idx = 1 if self.debug_mode else 0
+        for i in range(start_idx, self.num_points):
+            dist_from_origin = torch.norm(new_positions[i])
+            if dist_from_origin < self.origin_radius:
+                # Move point to boundary
+                new_positions[i] = new_positions[i] * (self.origin_radius / dist_from_origin)
+                # Reflect velocity
+                self.velocities[i] = self._reflect_velocity_from_origin(new_positions[i], self.velocities[i])
+        
+        # Handle outer bounds
         for i in range(3):
             # Check lower bound
             mask_low = new_positions[start_idx:, i] < self.bounds[i*2]
@@ -251,7 +288,7 @@ class RobotSDFVisualizer:
         points_np = initial_points.cpu().numpy()
         
         for point in points_np:
-            visual_shape_id = self.create_visual_sphere(radius=0.05)
+            visual_shape_id = self.create_visual_sphere(radius=0.03)
             sphere_id = p.createMultiBody(
                 baseMass=0,  # Static object
                 baseVisualShapeIndex=visual_shape_id,
@@ -410,13 +447,13 @@ class RobotSDFVisualizer:
                 
                 safe_velocities = self.safety_controller.generate_control(
                     nominal_velocities,
-                    sdf_val - 0.05,  # h = sdf - safety_margin
+                    sdf_val - 0.1,  # h = sdf - safety_margin
                     sdf_grad_min,
                     cbf_t_grad_min
                 )
             else:  # dro_cbf_qp
                 # Use most critical points for DRO (up to 5)
-                cbf_h_samples = (sdf[min_indices].cpu().numpy() - 0.05)  # Apply safety margin
+                cbf_h_samples = (sdf[min_indices].cpu().numpy() - 0.1)  # Apply safety margin
                 cbf_h_grad_samples = sdf_grad[min_indices].cpu().numpy()
                 cbf_t_grad_samples = cbf_t_grads[min_indices]
                 
