@@ -549,5 +549,5 @@ if __name__ == "__main__":
                                    0.20779162], dtype=np.float32)
     
     # Create visualizer with specified controller mode, cbf_qp or dro_cbf_qp
-    visualizer = RobotSDFVisualizer(goal_config, use_gui=False, controller_mode='dro_cbf_qp')
+    visualizer = RobotSDFVisualizer(goal_config, use_gui=True, controller_mode='dro_cbf_qp')
     goal_dists, sdf_dists = visualizer.run_demo(duration=16.0)
