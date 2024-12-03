@@ -6,25 +6,20 @@ import time
 import os
 from mlp import MLPRegression
 from nn_cdf import CDF
+from operate_env_utils import FrankaEnvironment
 
 class CDFVisualizer:
     def __init__(self, device='cuda'):
         self.device = device
         
-        # Initialize PyBullet
-        p.connect(p.GUI)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -9.81)
-        p.loadURDF("plane.urdf")
-        
-        # Load Franka robot
-        self.robot_id = p.loadURDF("franka_panda/panda.urdf", [0, 0, 0], useFixedBase=True)
+        # Initialize environment using FrankaEnvironment
+        self.env = FrankaEnvironment(gui=True)
+        self.robot_id = self.env.robot_id
         
         # Load CDF model
         self.cdf, self.model = self.load_cdf_model()
         
-        # Create obstacles and get their point clouds
-        self.obstacles = self.create_obstacles()
+        # Get obstacle point cloud
         self.obstacle_points = self.get_obstacle_points()
         
         # Store previous closest point for cleanup
@@ -62,44 +57,16 @@ class CDFVisualizer:
         
         return cdf, model
     
-    def create_obstacles(self):
-        """Create various obstacles in the environment"""
-        obstacles = []
-        
-        # Create a wall of small spheres
-        for x in np.linspace(-0.3, 0.4, 10):
-            for z in np.linspace(0.2, 0.5, 10):
-                visual_id = p.createVisualShape(p.GEOM_SPHERE, radius=0.01, rgbaColor=[0.5, 0.5, 0.5, 0.7])
-                body_id = p.createMultiBody(baseMass=0, baseVisualShapeIndex=visual_id, 
-                                          basePosition=[x, 0.2, z])
-                obstacles.append(body_id)
-        
-        # Create a ring of spheres
-        # radius = 0.3
-        # center = [0.5, -0.3, 0.5]
-        # num_points = 16
-        # for i in range(num_points):
-        #     angle = 2 * np.pi * i / num_points
-        #     x = center[0] + radius * np.cos(angle)
-        #     y = center[1] + radius * np.sin(angle)
-        #     visual_id = p.createVisualShape(p.GEOM_SPHERE, radius=0.02, rgbaColor=[0.5, 0.5, 0.5, 0.7])
-        #     body_id = p.createMultiBody(baseMass=0, baseVisualShapeIndex=visual_id, 
-        #                               basePosition=[x, y, center[2]])
-        #     obstacles.append(body_id)
-            
-        return obstacles
-    
     def get_obstacle_points(self):
-        """Convert obstacles to point cloud"""
-        points = []
-        for obs in self.obstacles:
-            pos, _ = p.getBasePositionAndOrientation(obs)
-            points.append(pos)
-        return torch.tensor(points, device=self.device)
+        """Get obstacle point cloud from environment"""
+        points = self.env.get_point_cloud(downsample=True, min_height=0.6)
+        return torch.tensor(points, device=self.device, dtype=torch.float32)
     
     def query_cdf(self, robot_config):
         """Query CDF values for current robot configuration"""
-        robot_config = torch.tensor(robot_config, device=self.device).reshape(1, 7)
+        robot_config = torch.tensor(robot_config, device=self.device, dtype=torch.float32).reshape(1, 7)
+
+        print('obstacle points', self.obstacle_points.shape)
         
         with torch.no_grad():
             min_dist = self.cdf.inference_d_wrt_q(
@@ -113,13 +80,9 @@ class CDFVisualizer:
     
     def visualize_distances(self, min_dist):
         """Visualize the closest point"""
-        # Reset all obstacles to default color
-        for obs in self.obstacles:
-            p.changeVisualShape(obs, -1, rgbaColor=[0.5, 0.5, 0.5, 0.7])
-        
         # Query all distances to find the closest point
         robot_config = torch.tensor([p.getJointState(self.robot_id, i)[0] for i in range(7)], 
-                                  device=self.device).reshape(1, 7)
+                                  device=self.device, dtype=torch.float32).reshape(1, 7)
         
         with torch.no_grad():
             all_distances = self.cdf.inference(
@@ -131,9 +94,6 @@ class CDFVisualizer:
         # Find the closest point
         closest_idx = torch.argmin(all_distances)
         closest_point = self.obstacle_points[closest_idx]
-        
-        # Highlight the closest obstacle in red
-        p.changeVisualShape(self.obstacles[closest_idx], -1, rgbaColor=[1, 0, 0, 1])
         
         # Remove previous visual marker if it exists
         if self.prev_closest_visual is not None:
@@ -147,8 +107,6 @@ class CDFVisualizer:
             textColorRGB=[1, 0, 0],
             textSize=1.5
         )
-        
-        #print(f"Minimum distance to obstacles: {min_dist:.3f}")
     
     def create_target_marker(self):
         """Create a visual marker for the target position"""
@@ -172,8 +130,7 @@ class CDFVisualizer:
         # Calculate error
         error = np.linalg.norm(self.target_pos - current_pos)
         
-        # Use IK to get joint angles for target position
-        target_orn = p.getQuaternionFromEuler([0, -np.pi, 0])  # Keep end effector pointing downward
+        target_orn = p.getQuaternionFromEuler([0, -np.pi, 0])
         joint_poses = p.calculateInverseKinematics(
             self.robot_id,
             self.end_effector_index,
@@ -220,7 +177,7 @@ class CDFVisualizer:
             print(f"Current position: {current_pos}, Error: {error:.3f}, Min distance: {min_dist:.3f}")
             
             # Step simulation
-            p.stepSimulation()
+            self.env.step()
             time.sleep(1./240.)
             
             # Optional: Stop if we're close enough to target
@@ -245,16 +202,8 @@ class CDFVisualizer:
         except ImportError:
             print("Matplotlib not available for plotting")
 
-    def setup_joint_sliders(self):
-        """Create sliders for controlling robot joints"""
-        self.sliders = []
-        for i in range(7):
-            slider = p.addUserDebugParameter(f"Joint {i}", -3.14, 3.14, 0)
-            self.sliders.append(slider)
-
 def main():
     visualizer = CDFVisualizer()
-    visualizer.setup_joint_sliders()
     visualizer.run()
 
 if __name__ == "__main__":
