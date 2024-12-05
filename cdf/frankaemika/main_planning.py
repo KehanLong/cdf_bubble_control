@@ -89,8 +89,8 @@ class CDFVisualizer:
             )
         
         # cdf model offset
-        return min_dist.item() 
-        #return 0.5
+        return min_dist.item() - 0.3
+        #return 2.0
     
     def visualize_distances(self, min_dist):
         """Visualize the closest point"""
@@ -238,7 +238,8 @@ class CDFVisualizer:
             view_matrix = p.computeViewMatrixFromYawPitchRoll(
                 cameraTargetPosition=[0.0, 0.0, 1.0],
                 distance=2.0,
-                yaw=(i / num_steps) * 100,  # Rotating camera
+                #yaw=(i / num_steps) * 100,  # Rotating camera
+                yaw=0,
                 pitch=-30,
                 roll=0,
                 upAxisIndex=2
@@ -376,7 +377,7 @@ class CDFVisualizer:
         plt.close()
 
 def main():
-    target_pos = np.array([-0.5, 0.8, 1.2])
+    target_pos = np.array([0.0, 0.3, 1.4])
     visualizer = CDFVisualizer(target_pos, gui_set=False)
     visualizer.run()
 

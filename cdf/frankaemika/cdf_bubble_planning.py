@@ -64,7 +64,7 @@ class BubblePlanner:
                 x = x[:7]
             x = np.array(x, dtype=np.float32)
             value = self.visualizer.query_cdf(x)
-            print(f"DEBUG: CDF query for config {x} returned {value}")
+            #print(f"DEBUG: CDF query for config {x} returned {value}")
             return value
         
         # Define joint limits (as float32)
@@ -87,8 +87,12 @@ class BubblePlanner:
                 max_retry_epsilon=1000,
                 max_num_iterations=10000
             )
+            print(f"\nInitial bubble generation complete:")
+            print(f"Number of bubbles in graph: {len(overlaps_graph.vs)}")
+            print(f"Number of max circles: {len(max_circles)}")
             return overlaps_graph, max_circles
         except Exception as e:
+            print(f"Bubble generation failed after creating {len(max_circles) if 'max_circles' in locals() else 0} bubbles")
             raise e
 
     def plan(self, start_config: np.ndarray, goal_config: np.ndarray):
@@ -98,11 +102,13 @@ class BubblePlanner:
 
             overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_config)
             
+            # Print number of bubbles created
+            num_bubbles = len(max_circles)
+            print(f"\nNumber of bubbles created: {num_bubbles}")
+            
             start_idx = position_to_max_circle_idx(overlaps_graph, start_config)
             
-            
             if start_idx < 0:
-                
                 overlaps_graph, start_idx = trace_toward_graph_all(
                     overlaps_graph, 
                     lambda x: self.visualizer.query_cdf(x),
@@ -110,14 +116,13 @@ class BubblePlanner:
                     self.min_radius, 
                     start_config
                 )
-                
-                
+                # Update bubble count after tracing start
+                num_bubbles = len(overlaps_graph.vs)
+                print(f"Number of bubbles after connecting start: {num_bubbles}")
             
             end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
             
-            
             if end_idx < 0:
-                
                 overlaps_graph, end_idx = trace_toward_graph_all(
                     overlaps_graph, 
                     lambda x: self.visualizer.query_cdf(x),
@@ -125,8 +130,9 @@ class BubblePlanner:
                     self.min_radius, 
                     goal_config
                 )
-                
-                
+                # Update bubble count after tracing goal
+                num_bubbles = len(overlaps_graph.vs)
+                print(f"Number of bubbles after connecting goal: {num_bubbles}")
             
             try:
                 epath_centre_distance = get_shortest_path(
