@@ -1,5 +1,6 @@
 import pybullet as p
 import pybullet_data
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import time
@@ -7,27 +8,31 @@ import os
 from mlp import MLPRegression
 from nn_cdf import CDF
 from operate_env_utils import FrankaEnvironment
+import imageio
+
+
+from cdf_bubble_planning import BubblePlanner
 
 class CDFVisualizer:
-    def __init__(self, device='cuda'):
+    def __init__(self, target_pos, device='cuda', gui_set=True):
         self.device = device
         
-        # Initialize environment using FrankaEnvironment
-        self.env = FrankaEnvironment(gui=True)
+        # Initialize environment using FrankaEnvironment with GUI disabled
+        self.env = FrankaEnvironment(gui=gui_set, add_default_objects=True)
         self.robot_id = self.env.robot_id
         
         # Load CDF model
         self.cdf, self.model = self.load_cdf_model()
         
-        # Get obstacle point cloud
-        self.obstacle_points = self.get_obstacle_points()
+        # Get obstacle point cloud (now returns tuple of world and robot frame points)
+        self.obstacle_points_world, self.obstacle_points = self.get_obstacle_points()
         
         # Store previous closest point for cleanup
         self.prev_closest_visual = None
         
-        # Add these new parameters
-        self.target_pos = np.array([0.4, 0.5, 0.6])  # Target position
-        self.end_effector_index = 7  # Franka's end effector link index
+        # Update target position to match goal config
+        self.target_pos = target_pos  # Using the goal config you specified
+        self.end_effector_index = 7
         
         # Create visual marker for target position
         self.create_target_marker()
@@ -36,6 +41,9 @@ class CDFVisualizer:
         self.cdf_values = []
         self.time_steps = []
         self.start_time = time.time()
+        
+        # Add bubble planner
+        self.planner = BubblePlanner(self)
         
     def load_cdf_model(self):
         """Load the pretrained CDF model"""
@@ -59,14 +67,18 @@ class CDFVisualizer:
     
     def get_obstacle_points(self):
         """Get obstacle point cloud from environment"""
-        points = self.env.get_point_cloud(downsample=True, min_height=0.6)
-        return torch.tensor(points, device=self.device, dtype=torch.float32)
+        points_world, points_robot = self.env.get_point_cloud(downsample=True, min_height=0.6)
+        return (
+            torch.tensor(points_world, device=self.device, dtype=torch.float32),
+            torch.tensor(points_robot, device=self.device, dtype=torch.float32)
+        )
     
     def query_cdf(self, robot_config):
         """Query CDF values for current robot configuration"""
         robot_config = torch.tensor(robot_config, device=self.device, dtype=torch.float32).reshape(1, 7)
-
-        print('obstacle points', self.obstacle_points.shape)
+        
+        # Update point cloud every query to get latest obstacle positions
+        _, self.obstacle_points = self.get_obstacle_points()
         
         with torch.no_grad():
             min_dist = self.cdf.inference_d_wrt_q(
@@ -76,7 +88,9 @@ class CDFVisualizer:
                 return_grad=False
             )
         
-        return min_dist.item()
+        # cdf model offset
+        return min_dist.item() 
+        #return 0.5
     
     def visualize_distances(self, min_dist):
         """Visualize the closest point"""
@@ -100,12 +114,12 @@ class CDFVisualizer:
             p.removeUserDebugItem(self.prev_closest_visual)
         
         # Add debug text showing the distance
-        text_pos = closest_point.cpu().numpy() + np.array([0, 0, 0.05])
+        text_pos = closest_point.cpu().numpy() + np.array([0, 0, 0.5])
         self.prev_closest_visual = p.addUserDebugText(
             f"cdf: {min_dist:.3f}",
             text_pos,
             textColorRGB=[1, 0, 0],
-            textSize=1.5
+            textSize=2.
         )
     
     def create_target_marker(self):
@@ -152,58 +166,218 @@ class CDFVisualizer:
         
         return error
 
-    def run(self):
-        """Main visualization loop"""
-        print("Moving to target position...")
+    def execute_planned_path(self, planned_path, duration=5.0):
+        """Execute planned path and record video"""
+        if planned_path is None:
+            print("No valid path to execute!")
+            return
+
+        planned_path = np.array(planned_path, dtype=np.float32)
+        num_steps = len(planned_path)
+        dt = duration / num_steps
+
+        # Video recording setup
+        width = 1920
+        height = 1080
+        frames = []
+
+        # Initialize lists to store values
+        self.cdf_values = []
+        self.time_steps = []
+        self.goal_distances = []
+        start_time = time.time()
         
-        while True:
-            # Move robot toward target
-            error = self.move_to_target()
+        # Create list for trajectory visualization
+        ee_positions = []
+        
+        for i, config in enumerate(planned_path):
+            # Set joint positions
+            for joint_idx, joint_val in enumerate(config):
+                p.setJointMotorControl2(
+                    self.robot_id,
+                    joint_idx,
+                    p.POSITION_CONTROL,
+                    float(joint_val),
+                    force=100
+                )
             
-            # Get current robot joint states
-            joint_states = [p.getJointState(self.robot_id, i)[0] for i in range(7)]
+            # Step simulation
+            for _ in range(10):
+                p.stepSimulation()
             
-            # Query CDF and visualize
-            min_dist = self.query_cdf(joint_states)
+            # Get and store end effector position
+            ee_state = p.getLinkState(self.robot_id, self.end_effector_index)
+            ee_pos = ee_state[0]
+            ee_positions.append(ee_pos)
+            
+            # Draw trajectory line
+            if len(ee_positions) >= 2:
+                p.addUserDebugLine(
+                    ee_positions[-2],
+                    ee_positions[-1],
+                    lineColorRGB=[0, 0, 1],
+                    lineWidth=2.0,
+                    lifeTime=0
+                )
+            
+            # Query CDF and record values
+            min_dist = self.query_cdf(config)
             self.visualize_distances(min_dist)
             
-            # Record CDF value and time
-            current_time = time.time() - self.start_time
+            # Calculate distance to goal
+            current_pos = self.get_end_effector_pos()
+            goal_dist = np.linalg.norm(self.target_pos - current_pos)
+            
+            # Record values
+            current_time = time.time() - start_time
             self.cdf_values.append(min_dist)
             self.time_steps.append(current_time)
+            self.goal_distances.append(goal_dist)
+
+            # Capture frame with rotating camera
+            view_matrix = p.computeViewMatrixFromYawPitchRoll(
+                cameraTargetPosition=[0.0, 0.0, 1.0],
+                distance=2.0,
+                yaw=(i / num_steps) * 100,  # Rotating camera
+                pitch=-30,
+                roll=0,
+                upAxisIndex=2
+            )
             
-            # Print current status
-            current_pos = self.get_end_effector_pos()
-            print(f"Current position: {current_pos}, Error: {error:.3f}, Min distance: {min_dist:.3f}")
+            proj_matrix = p.computeProjectionMatrixFOV(
+                fov=60,
+                aspect=width/height,
+                nearVal=0.1,
+                farVal=100.0
+            )
+            
+            # Get image
+            _, _, rgb, _, _ = p.getCameraImage(
+                width=width,
+                height=height,
+                viewMatrix=view_matrix,
+                projectionMatrix=proj_matrix,
+                renderer=p.ER_BULLET_HARDWARE_OPENGL
+            )
+            
+            # Convert to RGB and append to frames
+            rgb_array = np.array(rgb)[:, :, :3]
+            frames.append(rgb_array)
             
             # Step simulation
             self.env.step()
-            time.sleep(1./240.)
+            time.sleep(dt)
+        
+        # Save video using imageio
+        print("Saving video...")
+        imageio.mimsave('robot_execution.mp4', frames, fps=int(1/dt))
+        
+        print("Motion complete!")
+        self.plot_cdf_values()
+
+    def run(self):
+        """Main planning and execution loop"""
+        print("Planning motion to target position...")
+        
+        # Get initial configuration (7 joints)
+        initial_config = np.array([p.getJointState(self.robot_id, i)[0] for i in range(7)])
+        print(f"Initial config: {initial_config}")
+        initial_cdf = self.query_cdf(initial_config)
+        print(f"Initial config CDF value: {initial_cdf}")
+        
+        # Calculate goal configuration using IK
+        target_orn = p.getQuaternionFromEuler([0, -np.pi, 0])
+        goal_config = np.array(p.calculateInverseKinematics(
+            self.robot_id,
+            self.end_effector_index,
+            self.target_pos,
+            target_orn,
+            maxNumIterations=100,
+            residualThreshold=1e-5
+        ))[:7]
+        #print(f"Goal config: {goal_config}")
+        goal_cdf = self.query_cdf(goal_config)
+        #print(f"Goal config CDF value: {goal_cdf}")
+        
+        # Check if goal configuration is safe
+        if goal_cdf < 0.05:
+            print("Warning: Goal configuration might be too close to obstacles!")
+            print("Trying to find alternative IK solution...")
             
-            # Optional: Stop if we're close enough to target
-            if error < 0.01:
-                print("Reached target position!")
+            # Try different orientations to find a safer goal configuration
+            orientations = [
+                p.getQuaternionFromEuler([0, -np.pi, 0]),
+                p.getQuaternionFromEuler([0, -np.pi/2, 0]),
+                p.getQuaternionFromEuler([0, -3*np.pi/4, 0]),
+                p.getQuaternionFromEuler([0, -np.pi/4, 0])
+            ]
+            
+            for orn in orientations:
+                alt_goal_config = np.array(p.calculateInverseKinematics(
+                    self.robot_id,
+                    self.end_effector_index,
+                    self.target_pos,
+                    orn,
+                    maxNumIterations=100,
+                    residualThreshold=1e-5
+                ))[:7]
+                
+                alt_cdf = self.query_cdf(alt_goal_config)
+                print(f"Alternative goal config CDF value: {alt_cdf}")
+                
+                if alt_cdf >= 0.05:
+                    goal_config = alt_goal_config
+                    goal_cdf = alt_cdf
+                    print("Found safer goal configuration!")
+                    break
+        
+        try:
+            # Use new bubble planner
+            print("Planning path...")
+            planned_path, bubbles = self.planner.plan(initial_config, goal_config)
+            
+            if planned_path is not None:
+                print("Executing planned path...")
+                self.execute_planned_path(planned_path)
+                print("Motion complete!")
                 self.plot_cdf_values()
-                break
+            else:
+                print("Failed to plan path!")
+        except Exception as e:
+            print(f"Planning failed with error: {str(e)}")
 
     def plot_cdf_values(self):
-        """Plot CDF values over time"""
-        try:
-            import matplotlib.pyplot as plt
-            
-            plt.figure(figsize=(10, 5))
-            plt.plot(self.time_steps, self.cdf_values, 'b-', label='CDF Value')
-            plt.xlabel('Time (s)')
-            plt.ylabel('Minimum Distance (m)')
-            plt.title('CDF Values During Motion')
-            plt.grid(True)
-            plt.legend()
-            plt.show()
-        except ImportError:
-            print("Matplotlib not available for plotting")
+        """Plot CDF values and goal distances over time"""
+        plt.figure(figsize=(10, 6))
+        
+        # Create two y-axes
+        ax1 = plt.gca()
+        ax2 = ax1.twinx()
+        
+        # Plot CDF values on left y-axis
+        line1 = ax1.plot(self.time_steps, self.cdf_values, 'b-', label='CDF Values', linewidth=2)
+        ax1.set_xlabel('Time (s)', fontsize=14)
+        ax1.set_ylabel('CDF Value', color='b', fontsize=14)
+        ax1.tick_params(axis='y', labelcolor='b')
+        
+        # Plot goal distances on right y-axis
+        line2 = ax2.plot(self.time_steps, self.goal_distances, 'r-', label='Distance to Goal', linewidth=2)
+        ax2.set_ylabel('Distance to Goal Config', color='r', fontsize=14)
+        ax2.tick_params(axis='y', labelcolor='r')
+        
+        # Add legend
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax1.legend(lines, labels, loc='upper right', fontsize=12)
+        
+        plt.title('CDF Values and Goal Distances During Execution', fontsize=16)
+        plt.grid(True)
+        plt.savefig('execution_plot.png', dpi=300, bbox_inches='tight')
+        plt.close()
 
 def main():
-    visualizer = CDFVisualizer()
+    target_pos = np.array([-0.5, 0.8, 1.2])
+    visualizer = CDFVisualizer(target_pos, gui_set=False)
     visualizer.run()
 
 if __name__ == "__main__":

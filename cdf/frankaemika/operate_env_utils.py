@@ -12,13 +12,18 @@ class FrankaEnvironment:
         
         # Load basic environment
         self.plane_id = p.loadURDF("plane.urdf")
+
+        self.robot_base_pos = [-0.6, 0.1, 0.6]
+
+        # Load Franka robot (fixed base)
         self.robot_id = p.loadURDF("franka_panda/panda.urdf", 
-                                 [-0.6, 0.3, 0.6], 
+                                 self.robot_base_pos,  
                                  useFixedBase=True)
         self.table_id = p.loadURDF("table/table.urdf", [0, 0, 0])
         
         # Store objects for tracking
         self.objects = []
+        self.duck_id = None  # Initialize duck_id
         
         # Add default objects if requested
         if add_default_objects:
@@ -27,14 +32,14 @@ class FrankaEnvironment:
     def add_default_objects(self):
         """Add default obstacles to the environment"""
         # Add cubes
-        self.add_obstacle("cube.urdf", [0.0, 0.3, 0.8], scaling=0.35)
-        self.add_obstacle("cube.urdf", [0.0, 0.0, 0.75], scaling=0.25)
-        self.add_obstacle("cube.urdf", [0.0, -0.2, 0.7], scaling=0.15)
+        self.add_obstacle("cube.urdf", [-0.2, 0.3, 0.8], scaling=0.35)
+        self.add_obstacle("cube.urdf", [-0.2, 0.0, 0.75], scaling=0.25)
+        self.add_obstacle("cube.urdf", [-0.2, -0.2, 0.7], scaling=0.15)
         
-        # Add duck
+        # Add duck and store its ID
         duck_orientation = p.getQuaternionFromEuler([np.pi/2, 0, np.pi/2])
-        self.add_obstacle("duck_vhacd.urdf", [0.4, -0.1, 0.6], 
-                         duck_orientation, scaling=3.0)
+        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.2, 0.3, 0.6], 
+                                       duck_orientation, scaling=3.0)
 
     def add_obstacle(self, urdf_path, position, orientation=None, scaling=1.0):
         """Add obstacle to the environment"""
@@ -44,7 +49,7 @@ class FrankaEnvironment:
         self.objects.append(obj_id)
         return obj_id
 
-    def downsample_point_cloud(self, points, voxel_size=0.03, target_points=1000):
+    def downsample_point_cloud(self, points, voxel_size=0.03, target_points=500):
         """
         Downsample point cloud using voxel grid method with adaptive boundaries
         
@@ -109,7 +114,12 @@ class FrankaEnvironment:
         return downsampled_points
 
     def get_point_cloud(self, width=320, height=240, downsample=True, min_height=0.6):
-        """Get filtered point cloud of the environment"""
+        """
+        Get filtered point cloud of the environment
+        
+        Returns:
+            tuple: (points_world, points_robot) - Points in world frame and robot frame
+        """
         # Camera setup
         fov = 60
         aspect = width / height
@@ -140,12 +150,14 @@ class FrankaEnvironment:
         depth_mask = depth_buffer < 0.9999
         object_ids = seg_mask & ((1 << 24) - 1)
         link_indices = seg_mask >> 24
-        object_mask = ~np.isin(object_ids, [0, 1])
+        
+        # Update object mask to exclude plane, robot, and duck
+        object_mask = ~np.isin(object_ids, [self.plane_id, self.robot_id, self.duck_id])
         mask = depth_mask & object_mask
         
         if not np.any(mask):
             print("No valid depth points found!")
-            return np.array([])
+            return np.array([]), np.array([])
         
         # Convert normalized depth to metric depth
         z_ndc = 2.0 * depth_buffer - 1.0
@@ -177,11 +189,21 @@ class FrankaEnvironment:
         height_mask = points_world[:, 2] >= min_height
         points_world = points_world[height_mask]
         
+        # Filter points near robot base
+        distances = np.linalg.norm(points_world - np.array(self.robot_base_pos), axis=1)
+        radius_mask = distances > 0.3  # Filter out points within 0.3 radius
+        points_world = points_world[radius_mask]
+        
         # Add downsampling option
         if downsample:
             points_world = self.downsample_point_cloud(points_world)
         
-        return points_world
+        # Transform to robot frame
+        robot_pos, robot_orn = p.getBasePositionAndOrientation(self.robot_id)
+        robot_mat = np.array(p.getMatrixFromQuaternion(robot_orn)).reshape(3, 3)
+        points_robot = (points_world - robot_pos) @ robot_mat.T
+        
+        return points_world, points_robot
 
     def reset(self):
         """Reset environment to initial state"""
@@ -197,12 +219,143 @@ class FrankaEnvironment:
         """Disconnect from PyBullet"""
         p.disconnect(self.client)
 
+    def solve_ik(self, target_pos, target_orn=None, robot_base_pos=None):
+        """
+        Solve inverse kinematics for the Franka robot.
+        
+        Args:
+            target_pos (list or np.ndarray): Target position [x, y, z] in world frame
+            target_orn (list or np.ndarray, optional): Target orientation as quaternion [x, y, z, w]. 
+                                                      If None, only position is considered.
+            robot_base_pos (list or np.ndarray, optional): Robot base position. 
+                                                          If None, uses default base position.
+        
+        Returns:
+            np.ndarray: Joint angles that achieve the target pose, or None if no solution found
+        """
+        if robot_base_pos is None:
+            robot_base_pos = self.robot_base_pos
+        
+        if target_orn is None:
+            # Default orientation: gripper pointing downward
+            target_orn = p.getQuaternionFromEuler([np.pi, 0, 0])
+        
+        # Get end effector link index (link 7 for Franka)
+        end_effector_index = 6
+        
+        # Store current joint states
+        current_joint_states = [p.getJointState(self.robot_id, i)[0] for i in range(7)]
+        
+        # Define joint limits for Franka
+        joint_limits = [
+            [-2.8973, 2.8973],  # joint 1
+            [-1.7628, 1.7628],  # joint 2
+            [-2.8973, 2.8973],  # joint 3
+            [-3.0718, -0.0698], # joint 4
+            [-2.8973, 2.8973],  # joint 5
+            [-0.0175, 3.7525],  # joint 6
+            [-2.8973, 2.8973]   # joint 7
+        ]
+        
+        # Try multiple initial configurations
+        best_solution = None
+        min_error = float('inf')
+        n_attempts = 5
+        
+        for attempt in range(n_attempts):
+            # Generate random initial configuration within joint limits
+            if attempt == 0:
+                # First attempt: use current configuration
+                initial_guess = current_joint_states
+            else:
+                # Subsequent attempts: random configuration within limits
+                initial_guess = [np.random.uniform(limit[0], limit[1]) for limit in joint_limits]
+                
+            # Set initial configuration
+            for i in range(7):
+                p.resetJointState(self.robot_id, i, initial_guess[i])
+            
+            # Calculate IK
+            joint_poses = p.calculateInverseKinematics(
+                self.robot_id,
+                end_effector_index,
+                target_pos,
+                target_orn,
+                lowerLimits=[limit[0] for limit in joint_limits],
+                upperLimits=[limit[1] for limit in joint_limits],
+                jointRanges=[limit[1] - limit[0] for limit in joint_limits],
+                restPoses=initial_guess,
+                maxNumIterations=100,
+                residualThreshold=1e-4
+            )
+            
+            # Verify IK solution
+            for i in range(7):
+                p.resetJointState(self.robot_id, i, joint_poses[i])
+            
+            # Get resulting end effector position
+            link_state = p.getLinkState(self.robot_id, end_effector_index)
+            achieved_pos = link_state[0]
+            achieved_orn = link_state[1]
+            
+            # Calculate position error
+            pos_error = np.linalg.norm(np.array(achieved_pos) - np.array(target_pos))
+            
+            # Update best solution if this is better
+            if pos_error < min_error:
+                min_error = pos_error
+                best_solution = joint_poses
+                
+            # If error is acceptable, break early
+            if pos_error < 0.05:  # 5cm threshold
+                break
+        
+        # Reset robot to original joint states
+        for i in range(7):
+            p.resetJointState(self.robot_id, i, current_joint_states[i])
+        
+        # Check if best solution is acceptable
+        if min_error > 0.05:  # 5cm threshold
+            print(f"Warning: Best IK solution found but position error is {min_error:.3f} meters")
+            return np.array(best_solution)
+        
+        return np.array(best_solution)
+
+    def test_ik(self):
+        """Test the IK solver with a specific target"""
+        target_pos = [0.4, -0.1, 0.7]
+        joint_angles = self.solve_ik(target_pos)
+        
+        if joint_angles is not None:
+            print(f"Found solution: {joint_angles}")
+            
+            # Visualize solution
+            original_joints = [p.getJointState(self.robot_id, i)[0] for i in range(7)]
+            
+            # Move to IK solution
+            for i in range(7):
+                p.resetJointState(self.robot_id, i, joint_angles[i])
+            
+            # Add visual marker at target position
+            p.addUserDebugPoints([target_pos], [[1,0,0]], pointSize=5)
+            
+            input("Press Enter to reset robot position...")
+            
+            # Reset to original position
+            for i in range(7):
+                p.resetJointState(self.robot_id, i, original_joints[i])
+        else:
+            print("No IK solution found")
+
 def main():
     """Demo script showing environment usage"""
     env = FrankaEnvironment(gui=True)
     
+    target_pos = [0.2, -0.2, 0.9]
+    joint_angles = env.solve_ik(target_pos)
+    print(f"Joint angles: {joint_angles}")
     # Get point cloud once
-    points = env.get_point_cloud(downsample=True)
+    points, _ = env.get_point_cloud(downsample=True)
     print(f"Captured point cloud shape: {points.shape}")
     
     try:
@@ -223,5 +376,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
     
