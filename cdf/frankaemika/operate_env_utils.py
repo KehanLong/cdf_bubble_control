@@ -13,7 +13,7 @@ class FrankaEnvironment:
         # Load basic environment
         self.plane_id = p.loadURDF("plane.urdf")
 
-        self.robot_base_pos = [-0.6, 0.1, 0.6]
+        self.robot_base_pos = [-0.6, 0.0, 0.6]
 
         # Load Franka robot (fixed base)
         self.robot_id = p.loadURDF("franka_panda/panda.urdf", 
@@ -24,6 +24,7 @@ class FrankaEnvironment:
         # Store objects for tracking
         self.objects = []
         self.duck_id = None  # Initialize duck_id
+        self.bookshelf_id = None  # Initialize bookshelf_id
         
         # Add default objects if requested
         if add_default_objects:
@@ -31,10 +32,14 @@ class FrankaEnvironment:
     
     def add_default_objects(self):
         """Add default obstacles to the environment"""
-        # Add cubes
-        self.add_obstacle("cube.urdf", [-0.2, 0.3, 0.8], scaling=0.35)
-        self.add_obstacle("cube.urdf", [-0.2, 0.0, 0.75], scaling=0.25)
-        self.add_obstacle("cube.urdf", [-0.2, -0.2, 0.7], scaling=0.15)
+        # Load bookshelf
+        self.bookshelf_id = p.loadURDF(
+            "obst_urdf/bookshelf.urdf",
+            basePosition=[0.0, 0.3, 0.62],  # Position on table
+            baseOrientation=p.getQuaternionFromEuler([0, 0, np.pi]),
+            globalScaling=0.4  # Scale down the bookshelf
+        )
+        self.objects.append(self.bookshelf_id)
         
         # Add duck and store its ID
         duck_orientation = p.getQuaternionFromEuler([np.pi/2, 0, np.pi/2])
@@ -126,7 +131,7 @@ class FrankaEnvironment:
         near = 0.01
         far = 10
         
-        camera_position = [-0.5, -2.0, 3.0]
+        camera_position = [0.0, -2.5, 1.8]
         camera_target = [0.0, 1.0, 0.0]
         up_vector = [0.0, 0.0, 1.0]
         

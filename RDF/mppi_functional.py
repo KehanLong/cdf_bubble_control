@@ -132,8 +132,8 @@ def setup_mppi_controller(
     u_guess=None,
     use_GPU=True,
     costs_lambda=0.03,
-    cost_goal_coeff=10.0,
-    cost_safety_coeff=1.0,
+    cost_goal_coeff=15.0,
+    cost_safety_coeff=0.8,
     cost_perturbation_coeff=0.02,
     cost_goal_coeff_final=12.0,
     cost_safety_coeff_final=1.0
@@ -196,7 +196,7 @@ def setup_mppi_controller(
                 )
                 
                 current_state = robot_states[:, :, t+1]
-                ee_pos = forward_kinematics_batch(current_state) + torch.tensor([-0.6, 0.1, 0.6], device='cuda')
+                ee_pos = forward_kinematics_batch(current_state) + torch.tensor([-0.6, 0.1, 0.625], device='cuda')
                 
                 # Goal cost
                 goal_dist = torch.norm(ee_pos - goal, dim=1)

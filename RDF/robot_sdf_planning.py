@@ -66,6 +66,8 @@ class PointTrajectoryManager:
         
         # Initialize velocities
         self.velocities = torch.zeros((num_points, 3)).to(device)
+
+        
         
         if debug_mode:
             # Set first point velocity for debugging
@@ -165,6 +167,7 @@ class RobotVelocityController:
         self.kd = kd  # Derivative gain
         self.num_joints = 7
         self.prev_error = np.zeros(7)
+
         
     def compute_velocity_command(self, current_joints, target_joints, dt):
         """Compute joint velocities to reach target configuration using PD control"""
@@ -193,7 +196,7 @@ class RobotVelocityController:
         return joint_velocities
 
 class RobotSDFVisualizer:
-    def __init__(self, ee_goal, use_gui=True):
+    def __init__(self, ee_goal, use_gui=True, initial_horizon=16):
         # Initialize environment
         self.env = FrankaEnvironment(gui=use_gui)
         self.physics_client = self.env.client
@@ -201,7 +204,7 @@ class RobotSDFVisualizer:
         self.use_gui = use_gui
 
         # Robot base transform
-        self.base_pos = torch.tensor([-0.6, 0.1, 0.6], device='cuda')
+        self.base_pos = torch.tensor(self.env.robot_base_pos, device='cuda')
 
         # Setup device
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -223,13 +226,15 @@ class RobotSDFVisualizer:
         
         # Store goal configuration (in task space)
         self.goal = ee_goal
+
+        self.initial_horizon = initial_horizon
         
         # Initialize MPPI controller after BP-SDF is properly loaded
         self.mppi_controller = setup_mppi_controller(
             learned_CDF=self.bp_sdf,
             use_GPU=(self.device=='cuda'),
-            samples=500,
-            initial_horizon=10
+            samples=2000,
+            initial_horizon=self.initial_horizon
         )
         
         # Create goal marker
@@ -279,7 +284,7 @@ class RobotSDFVisualizer:
         
         return ee_pos_world
 
-    def run_demo(self, duration=6.0, fps=20):
+    def run_demo(self, duration=5.0, fps=20):
         """Run demo with MPPI control and record video"""
         print("Starting MPPI demo...")
         time_steps = int(duration * fps)
@@ -296,7 +301,7 @@ class RobotSDFVisualizer:
         
         # Initialize state and control sequence
         current_state = self.get_current_joint_states()
-        U = torch.zeros((10, 7), device=self.device)
+        U = torch.zeros((self.initial_horizon, 7), device=self.device)
         
         # Get point cloud obstacles
         points_world, points_robot = self.env.get_point_cloud(downsample=True)
@@ -335,8 +340,8 @@ class RobotSDFVisualizer:
                 init_state=current_state,
                 goal=self.goal,
                 obstaclesX=points_robot,  # Use points in robot frame
-                safety_margin=-0.2,
-                batch_size=200
+                safety_margin=-0.1,
+                batch_size=400
             )
             
             # Update robot state
@@ -345,10 +350,11 @@ class RobotSDFVisualizer:
             
             # Capture frame with rotating camera
             view_matrix = p.computeViewMatrixFromYawPitchRoll( 
-                cameraTargetPosition=[0.0, 0.0, 1.0],  
+                cameraTargetPosition=[0.0, 0.0, 1.5],  
                 distance=2.0,
-                yaw=(step / time_steps) * 100,  # Rotating camera
-                pitch=-30,
+                #yaw=(step / time_steps) * 100,  # Rotating camera
+                yaw = 0,
+                pitch=0,
                 roll=0,
                 upAxisIndex=2
             )
@@ -407,6 +413,6 @@ class RobotSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage
-    goal_config = torch.tensor([0.2, 0.3, 0.8], device='cuda')
-    visualizer = RobotSDFVisualizer(goal_config, use_gui=False)
+    goal_pos = torch.tensor([0.2, 0.0, 1.5], device='cuda')
+    visualizer = RobotSDFVisualizer(goal_pos, use_gui=False)
     goal_distances, sdf_distances = visualizer.run_demo()
