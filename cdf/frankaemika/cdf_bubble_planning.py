@@ -2,7 +2,7 @@ import pybullet as p
 import numpy as np
 import cvxpy
 from dataclasses import dataclass
-from sdf_marching.samplers import get_rapidly_exploring
+from sdf_marching.samplers import get_rapidly_exploring, get_uniform_random
 from sdf_marching.overlap import position_to_max_circle_idx
 from sdf_marching.samplers.tracing import trace_toward_graph_all
 from sdf_marching.discrete import get_shortest_path
@@ -24,9 +24,9 @@ class BubblePlanner:
         # Planning parameters
         self.epsilon = 5E-2  # Bubble expansion parameter
         self.min_radius = 1E-1
-        self.num_samples = 3000
-        self.max_iterations = 1000
-        self.step_size = 0.1
+        self.num_samples = 1E5
+        self.max_iterations = 1E4
+        self.step_size = 0.2
         
     def sample_config(self) -> np.ndarray:
         """Sample random configuration within joint limits"""
@@ -48,52 +48,71 @@ class BubblePlanner:
         return center_dist < (b1.radius + b2.radius)
     
     def generate_bubbles(self, start_config: np.ndarray, goal_config: np.ndarray):
-        """Generate bubbles using rapidly exploring random tree"""
-
+        """Generate bubbles using uniform random sampling"""
         
         # Convert input configs to float32 and ensure correct shape
         start_config = start_config.astype(np.float32)[:7]
         goal_config = goal_config.astype(np.float32)[:7]
         
-
-        
         # Wrap the CDF query to ensure float32 inputs and correct shape
         def cdf(x):
+            
             if len(x.shape) > 1:
-                x = x[:, :7]
+                # Handle batch input
+                results = []
+                for single_x in x:
+                    single_x = single_x[:7].astype(np.float32)
+                    value = self.visualizer.query_cdf(single_x)
+                    results.append(value)
+                return np.array(results)
             else:
-                x = x[:7]
-            x = np.array(x, dtype=np.float32)
-            value = self.visualizer.query_cdf(x)
-            #print(f"DEBUG: CDF query for config {x} returned {value}")
-            return value
+                # Handle single input
+                x = x[:7].astype(np.float32)
+                return self.visualizer.query_cdf(x)
         
         # Define joint limits (as float32)
         mins = np.array([p.getJointInfo(self.robot_id, i)[8] for i in range(7)], dtype=np.float32)
         maxs = np.array([p.getJointInfo(self.robot_id, i)[9] for i in range(7)], dtype=np.float32)
-
-        
         
         try:
+            # Method 1: RRT-based bubble generation (commented out for now)
+            # print("Starting RRT-based sampling...")
             overlaps_graph, max_circles, _ = get_rapidly_exploring(
                 cdf,
                 self.epsilon,
                 self.min_radius,
-                1E5,
+                self.num_samples,
                 mins,
                 maxs,
-                start_config,
-                end_point=goal_config,
-                max_retry=1000,
-                max_retry_epsilon=1000,
-                max_num_iterations=1e3
+                start_point=start_config,
+                max_retry=500,
+                max_retry_epsilon=100,
+                max_num_iterations=self.max_iterations,
+                inflate_factor=1.0,
+                prc=0.2,
+                end_point=goal_config
             )
+
+            # Method 2: Uniform random sampling
+            # print("Starting uniform random sampling...")
+            # overlaps_graph, max_circles = get_uniform_random(
+            #     cdf,
+            #     self.epsilon,
+            #     self.min_radius,
+            #     self.num_samples,  # Convert to int explicitly
+            #     mins,
+            #     maxs,
+            #     start_point=start_config
+            # )
+            
             print(f"\nInitial bubble generation complete:")
             print(f"Number of bubbles in graph: {len(overlaps_graph.vs)}")
             print(f"Number of max circles: {len(max_circles)}")
             return overlaps_graph, max_circles
+            
         except Exception as e:
             print(f"Bubble generation failed after creating {len(max_circles) if 'max_circles' in locals() else 0} bubbles")
+            print(f"Error details: {str(e)}")
             raise e
 
     def plan(self, start_config: np.ndarray, goal_config: np.ndarray):
@@ -109,8 +128,10 @@ class BubblePlanner:
             print(f"\nNumber of bubbles created: {num_bubbles}")
             
             start_idx = position_to_max_circle_idx(overlaps_graph, start_config)
+            print(f"Start index: {start_idx}")
             
             if start_idx < 0:
+                print("Connecting start config to graph...")
                 overlaps_graph, start_idx = trace_toward_graph_all(
                     overlaps_graph, 
                     lambda x: self.visualizer.query_cdf(x),
@@ -121,8 +142,10 @@ class BubblePlanner:
                 print(f"Number of bubbles after connecting start: {len(overlaps_graph.vs)}")
             
             end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
+            print(f"End index: {end_idx}")
             
             if end_idx < 0:
+                print("Connecting goal config to graph...")
                 overlaps_graph, end_idx = trace_toward_graph_all(
                     overlaps_graph, 
                     lambda x: self.visualizer.query_cdf(x),
@@ -132,17 +155,24 @@ class BubblePlanner:
                 )
                 print(f"Number of bubbles after connecting goal: {len(overlaps_graph.vs)}")
             
-            try:
-                epath = get_shortest_path(
-                    lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
-                    overlaps_graph,
-                    start_idx,
-                    end_idx,
-                    cost_name="cost",
-                    return_epath=True,
-                )
-            except Exception as e:
-                print(f"Could not find complete path to goal. Finding closest reachable point...")
+            print(f"Attempting to find path from {start_idx} to {end_idx}")
+            
+            # First try to find a direct path
+            path_result = get_shortest_path(
+                lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
+                overlaps_graph,
+                start_idx,
+                end_idx,
+                cost_name="cost",
+                return_epath=True,
+            )
+            
+            print(f"Path result type: {type(path_result)}")
+            print(f"Path result value: {path_result}")
+            
+            # If path_result is a float, it means no path was found
+            if isinstance(path_result, float):
+                print("No direct path found. Attempting to find path to closest reachable point...")
                 # Find the bubble closest to the goal
                 distances_to_goal = []
                 for idx in range(len(overlaps_graph.vs)):
@@ -152,9 +182,10 @@ class BubblePlanner:
                 
                 # Sort by distance and get closest bubble
                 closest_idx = min(distances_to_goal, key=lambda x: x[0])[1]
+                print(f"Closest reachable bubble index: {closest_idx}")
                 
                 # Find path to closest reachable point
-                epath = get_shortest_path(
+                path_result = get_shortest_path(
                     lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
                     overlaps_graph,
                     start_idx,
@@ -162,11 +193,21 @@ class BubblePlanner:
                     cost_name="cost",
                     return_epath=True,
                 )
+                
+                print(f"Path to closest point result type: {type(path_result)}")
+                print(f"Path to closest point result value: {path_result}")
+                
+                # If still no path found, raise error
+                if isinstance(path_result, float):
+                    raise ValueError("Could not find path even to closest reachable point")
+                    
                 print(f"Found partial path to closest reachable point")
+                
+                # Update goal_config to be the center of the closest reachable bubble
+                goal_config = overlaps_graph.vs[closest_idx]['circle'].center
             
-            # Ensure epath is a tuple containing the edge path
-            if not isinstance(epath, tuple):
-                raise ValueError("Expected edge path tuple but got different return type")
+            # At this point, path_result should be a valid path tuple
+            epath = path_result
             
             try:
                 # Use the first element of epath tuple which contains the edge sequence

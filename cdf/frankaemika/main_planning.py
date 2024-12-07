@@ -89,8 +89,8 @@ class CDFVisualizer:
             )
         
         # cdf model offset
-        return min_dist.item() - 0.2
-        #return 0.5
+        #return min_dist.item() - 0.2
+        return 1.3
     
     def visualize_distances(self, min_dist):
         """Visualize the closest point"""
@@ -352,7 +352,7 @@ class CDFVisualizer:
         plt.close()
 
 def main():
-    target_pos = np.array([0.0, 0.3, 1.4])
+    target_pos = np.array([0.2, 0.1, 1.05])
     visualizer = CDFVisualizer(target_pos, gui_set=False)
     visualizer.run()
 
