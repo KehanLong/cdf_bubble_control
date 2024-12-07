@@ -69,7 +69,7 @@ class FrankaEnvironment:
         
         # Add duck and store its ID
         duck_orientation = p.getQuaternionFromEuler([np.pi/2, 0, np.pi/2])
-        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.4, 0.3, 0.6], 
+        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.4, 0.1, 0.625], 
                                        duck_orientation, scaling=3.0)
 
     def add_obstacle(self, urdf_path, position, orientation=None, scaling=1.0):
@@ -264,6 +264,10 @@ class FrankaEnvironment:
         Returns:
             np.ndarray: Joint angles that achieve the target pose, or None if no solution found
         """
+        # Add a visual marker for the target position (at the beginning of the method)
+        #p.addUserDebugLine([target_pos[0], target_pos[1], 0], target_pos, [1, 0, 0], lineWidth=3)  # Vertical red line
+        p.addUserDebugPoints([target_pos], [[0, 1, 0]], pointSize=10)  # Green point at target
+        
         if robot_base_pos is None:
             robot_base_pos = self.robot_base_pos
         
@@ -354,7 +358,7 @@ class FrankaEnvironment:
 
     def test_ik(self):
         """Test the IK solver with a specific target"""
-        target_pos = [0.4, -0.1, 0.7]
+        target_pos = [0.2, -0.0, 1.5]
         joint_angles = self.solve_ik(target_pos)
         
         if joint_angles is not None:
@@ -382,7 +386,7 @@ def main():
     """Demo script showing environment usage"""
     env = FrankaEnvironment(gui=True)
     
-    target_pos = [0.2, -0.2, 0.9]
+    target_pos = [0.2, 0.1, 1.05]
     joint_angles = env.solve_ik(target_pos)
     print(f"Joint angles: {joint_angles}")
     # Get point cloud once

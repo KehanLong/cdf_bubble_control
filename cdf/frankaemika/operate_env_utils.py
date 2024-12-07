@@ -13,12 +13,38 @@ class FrankaEnvironment:
         # Load basic environment
         self.plane_id = p.loadURDF("plane.urdf")
 
-        self.robot_base_pos = [-0.6, 0.0, 0.6]
+        self.robot_base_pos = [-0.6, 0.0, 0.625]
 
         # Load Franka robot (fixed base)
         self.robot_id = p.loadURDF("franka_panda/panda.urdf", 
                                  self.robot_base_pos,  
                                  useFixedBase=True)
+        
+        # Disable the gripper joints and make gripper components invisible
+        # Joint indices: 7,8 for finger joints, and the hand link
+        for joint_id in [7, 8]:  # Gripper finger joint indices
+            p.setJointMotorControl2(
+                self.robot_id,
+                joint_id,
+                p.POSITION_CONTROL,
+                targetPosition=0,
+                force=0
+            )
+
+        # Make gripper components invisible
+        # This includes the hand and both fingers
+        for link_name in ["panda_hand", "panda_leftfinger", "panda_rightfinger"]:
+            link_id = -1
+            for i in range(p.getNumJoints(self.robot_id)):
+                joint_info = p.getJointInfo(self.robot_id, i)
+                if joint_info[12].decode('utf-8') == link_name:
+                    link_id = i
+                    p.changeVisualShape(
+                        self.robot_id,
+                        link_id,
+                        rgbaColor=[0, 0, 0, 0]  # Fully transparent
+                    )
+        
         self.table_id = p.loadURDF("table/table.urdf", [0, 0, 0])
         
         # Store objects for tracking
@@ -35,7 +61,7 @@ class FrankaEnvironment:
         # Load bookshelf
         self.bookshelf_id = p.loadURDF(
             "obst_urdf/bookshelf.urdf",
-            basePosition=[0.0, 0.3, 0.62],  # Position on table
+            basePosition=[0.2, 0.2, 0.625],  # Position on table
             baseOrientation=p.getQuaternionFromEuler([0, 0, np.pi]),
             globalScaling=0.4  # Scale down the bookshelf
         )
@@ -43,7 +69,7 @@ class FrankaEnvironment:
         
         # Add duck and store its ID
         duck_orientation = p.getQuaternionFromEuler([np.pi/2, 0, np.pi/2])
-        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.2, 0.3, 0.6], 
+        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.4, 0.1, 0.625], 
                                        duck_orientation, scaling=3.0)
 
     def add_obstacle(self, urdf_path, position, orientation=None, scaling=1.0):
@@ -131,7 +157,7 @@ class FrankaEnvironment:
         near = 0.01
         far = 10
         
-        camera_position = [0.0, -2.5, 1.8]
+        camera_position = [-1., -2.5, 1.8]
         camera_target = [0.0, 1.0, 0.0]
         up_vector = [0.0, 0.0, 1.0]
         
@@ -238,6 +264,10 @@ class FrankaEnvironment:
         Returns:
             np.ndarray: Joint angles that achieve the target pose, or None if no solution found
         """
+        # Add a visual marker for the target position (at the beginning of the method)
+        #p.addUserDebugLine([target_pos[0], target_pos[1], 0], target_pos, [1, 0, 0], lineWidth=3)  # Vertical red line
+        p.addUserDebugPoints([target_pos], [[0, 1, 0]], pointSize=10)  # Green point at target
+        
         if robot_base_pos is None:
             robot_base_pos = self.robot_base_pos
         
@@ -328,7 +358,7 @@ class FrankaEnvironment:
 
     def test_ik(self):
         """Test the IK solver with a specific target"""
-        target_pos = [0.4, -0.1, 0.7]
+        target_pos = [0.2, -0.0, 1.5]
         joint_angles = self.solve_ik(target_pos)
         
         if joint_angles is not None:
@@ -356,7 +386,7 @@ def main():
     """Demo script showing environment usage"""
     env = FrankaEnvironment(gui=True)
     
-    target_pos = [0.2, -0.2, 0.9]
+    target_pos = [0.2, 0.1, 1.05]
     joint_angles = env.solve_ik(target_pos)
     print(f"Joint angles: {joint_angles}")
     # Get point cloud once
@@ -381,4 +411,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

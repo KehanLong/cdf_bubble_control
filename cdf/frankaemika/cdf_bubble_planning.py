@@ -7,6 +7,7 @@ from sdf_marching.overlap import position_to_max_circle_idx
 from sdf_marching.samplers.tracing import trace_toward_graph_all
 from sdf_marching.discrete import get_shortest_path
 from sdf_marching.cvx import edgeseq_to_traj_constraint_bezier, bezier_cost_all
+import cProfile
 
 @dataclass
 class Bubble:
@@ -78,14 +79,14 @@ class BubblePlanner:
                 cdf,
                 self.epsilon,
                 self.min_radius,
-                10000,
+                1E5,
                 mins,
                 maxs,
                 start_config,
                 end_point=goal_config,
                 max_retry=1000,
                 max_retry_epsilon=1000,
-                max_num_iterations=10000
+                max_num_iterations=1e3
             )
             print(f"\nInitial bubble generation complete:")
             print(f"Number of bubbles in graph: {len(overlaps_graph.vs)}")
@@ -99,8 +100,9 @@ class BubblePlanner:
         """Main planning function"""
         print("\nDEBUG: Starting planning process...")
         try:
-
+            #with cProfile.Profile() as pr:
             overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_config)
+            #pr.print_stats('cumtime')
             
             # Print number of bubbles created
             num_bubbles = len(max_circles)
@@ -116,9 +118,7 @@ class BubblePlanner:
                     self.min_radius, 
                     start_config
                 )
-                # Update bubble count after tracing start
-                num_bubbles = len(overlaps_graph.vs)
-                print(f"Number of bubbles after connecting start: {num_bubbles}")
+                print(f"Number of bubbles after connecting start: {len(overlaps_graph.vs)}")
             
             end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
             
@@ -130,12 +130,10 @@ class BubblePlanner:
                     self.min_radius, 
                     goal_config
                 )
-                # Update bubble count after tracing goal
-                num_bubbles = len(overlaps_graph.vs)
-                print(f"Number of bubbles after connecting goal: {num_bubbles}")
+                print(f"Number of bubbles after connecting goal: {len(overlaps_graph.vs)}")
             
             try:
-                epath_centre_distance = get_shortest_path(
+                epath = get_shortest_path(
                     lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
                     overlaps_graph,
                     start_idx,
@@ -143,15 +141,37 @@ class BubblePlanner:
                     cost_name="cost",
                     return_epath=True,
                 )
-                
             except Exception as e:
+                print(f"Could not find complete path to goal. Finding closest reachable point...")
+                # Find the bubble closest to the goal
+                distances_to_goal = []
+                for idx in range(len(overlaps_graph.vs)):
+                    bubble_center = overlaps_graph.vs[idx]['circle'].center
+                    dist = np.linalg.norm(bubble_center - goal_config)
+                    distances_to_goal.append((dist, idx))
                 
-                raise e
+                # Sort by distance and get closest bubble
+                closest_idx = min(distances_to_goal, key=lambda x: x[0])[1]
+                
+                # Find path to closest reachable point
+                epath = get_shortest_path(
+                    lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
+                    overlaps_graph,
+                    start_idx,
+                    closest_idx,
+                    cost_name="cost",
+                    return_epath=True,
+                )
+                print(f"Found partial path to closest reachable point")
             
+            # Ensure epath is a tuple containing the edge path
+            if not isinstance(epath, tuple):
+                raise ValueError("Expected edge path tuple but got different return type")
             
             try:
+                # Use the first element of epath tuple which contains the edge sequence
                 bps, constr_bps = edgeseq_to_traj_constraint_bezier(
-                    overlaps_graph.es[epath_centre_distance[0]], 
+                    overlaps_graph.es[epath[0]], 
                     start_config, 
                     goal_config
                 )
@@ -163,15 +183,14 @@ class BubblePlanner:
                 times = np.linspace(0, 1.0, 50)
                 query = np.vstack([bp.query(times).value for bp in bps])
                 
-                
                 return query, max_circles
                 
             except Exception as e:
-                
+                print(f"Failed to generate trajectory: {str(e)}")
                 raise e
                 
         except Exception as e:
-            
+            print(f"Planning failed with error: {str(e)}")
             raise e
     
     

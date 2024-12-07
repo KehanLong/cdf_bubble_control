@@ -78,7 +78,7 @@ class CDFVisualizer:
         robot_config = torch.tensor(robot_config, device=self.device, dtype=torch.float32).reshape(1, 7)
         
         # Update point cloud every query to get latest obstacle positions
-        _, self.obstacle_points = self.get_obstacle_points()
+        # _, self.obstacle_points = self.get_obstacle_points()
         
         with torch.no_grad():
             min_dist = self.cdf.inference_d_wrt_q(
@@ -89,8 +89,8 @@ class CDFVisualizer:
             )
         
         # cdf model offset
-        return min_dist.item() - 0.3
-        #return 2.0
+        return min_dist.item() - 0.2
+        #return 0.5
     
     def visualize_distances(self, min_dist):
         """Visualize the closest point"""
@@ -166,7 +166,7 @@ class CDFVisualizer:
         
         return error
 
-    def execute_planned_path(self, planned_path, duration=5.0):
+    def execute_planned_path(self, planned_path, duration=5.0, record_video=False):
         """Execute planned path and record video"""
         if planned_path is None:
             print("No valid path to execute!")
@@ -176,19 +176,17 @@ class CDFVisualizer:
         num_steps = len(planned_path)
         dt = duration / num_steps
 
-        # Video recording setup
-        width = 1920
-        height = 1080
+        # Video recording setup - only if needed
         frames = []
+        if record_video:
+            width = 1920
+            height = 1080
 
-        # Initialize lists to store values
+        # Initialize tracking variables
         self.cdf_values = []
         self.time_steps = []
         self.goal_distances = []
         start_time = time.time()
-        
-        # Create list for trajectory visualization
-        ee_positions = []
         
         for i, config in enumerate(planned_path):
             # Set joint positions
@@ -201,77 +199,54 @@ class CDFVisualizer:
                     force=100
                 )
             
-            # Step simulation
-            for _ in range(10):
-                p.stepSimulation()
+            # Single simulation step is usually enough
+            p.stepSimulation()
             
-            # Get and store end effector position
-            ee_state = p.getLinkState(self.robot_id, self.end_effector_index)
-            ee_pos = ee_state[0]
-            ee_positions.append(ee_pos)
-            
-            # Draw trajectory line
-            if len(ee_positions) >= 2:
-                p.addUserDebugLine(
-                    ee_positions[-2],
-                    ee_positions[-1],
-                    lineColorRGB=[0, 0, 1],
-                    lineWidth=2.0,
-                    lifeTime=0
-                )
-            
-            # Query CDF and record values
-            min_dist = self.query_cdf(config)
-            self.visualize_distances(min_dist)
-            
-            # Calculate distance to goal
-            current_pos = self.get_end_effector_pos()
-            goal_dist = np.linalg.norm(self.target_pos - current_pos)
-            
-            # Record values
-            current_time = time.time() - start_time
-            self.cdf_values.append(min_dist)
-            self.time_steps.append(current_time)
-            self.goal_distances.append(goal_dist)
+            # Only collect metrics every few steps to reduce overhead
+            if i % 2 == 0:  # Adjust this number as needed
+                # Query CDF and record values
+                min_dist = self.query_cdf(config)
+                current_pos = self.get_end_effector_pos()
+                goal_dist = np.linalg.norm(self.target_pos - current_pos)
+                
+                current_time = time.time() - start_time
+                self.cdf_values.append(min_dist)
+                self.time_steps.append(current_time)
+                self.goal_distances.append(goal_dist)
 
-            # Capture frame with rotating camera
-            view_matrix = p.computeViewMatrixFromYawPitchRoll(
-                cameraTargetPosition=[0.0, 0.0, 1.0],
-                distance=2.0,
-                #yaw=(i / num_steps) * 100,  # Rotating camera
-                yaw=0,
-                pitch=-30,
-                roll=0,
-                upAxisIndex=2
-            )
-            
-            proj_matrix = p.computeProjectionMatrixFOV(
-                fov=60,
-                aspect=width/height,
-                nearVal=0.1,
-                farVal=100.0
-            )
-            
-            # Get image
-            _, _, rgb, _, _ = p.getCameraImage(
-                width=width,
-                height=height,
-                viewMatrix=view_matrix,
-                projectionMatrix=proj_matrix,
-                renderer=p.ER_BULLET_HARDWARE_OPENGL
-            )
-            
-            # Convert to RGB and append to frames
-            rgb_array = np.array(rgb)[:, :, :3]
-            frames.append(rgb_array)
-            
-            # Step simulation
-            self.env.step()
-            time.sleep(dt)
-        
-        # Save video using imageio
-        print("Saving video...")
-        imageio.mimsave('robot_execution.mp4', frames, fps=int(1/dt))
+            # Only record video if requested
+            if record_video:
+                view_matrix = p.computeViewMatrixFromYawPitchRoll(
+                    cameraTargetPosition=[0.0, 0.0, 1.0],
+                    distance=2.0,
+                    yaw=0,
+                    pitch=-30,
+                    roll=0,
+                    upAxisIndex=2
+                )
+                
+                proj_matrix = p.computeProjectionMatrixFOV(
+                    fov=60,
+                    aspect=width/height,
+                    nearVal=0.1,
+                    farVal=100.0
+                )
+                
+                _, _, rgb, _, _ = p.getCameraImage(
+                    width=width,
+                    height=height,
+                    viewMatrix=view_matrix,
+                    projectionMatrix=proj_matrix,
+                    renderer=p.ER_BULLET_HARDWARE_OPENGL
+                )
+                
+                rgb_array = np.array(rgb)[:, :, :3]
+                frames.append(rgb_array)
+
+        # Save video only if we recorded frames
+        if record_video and frames:
+            print("Saving video...")
+            imageio.mimsave('robot_execution.mp4', frames, fps=int(1/dt))
         
         print("Motion complete!")
         self.plot_cdf_values()
@@ -339,7 +314,7 @@ class CDFVisualizer:
             
             if planned_path is not None:
                 print("Executing planned path...")
-                self.execute_planned_path(planned_path)
+                self.execute_planned_path(planned_path, record_video=True)
                 print("Motion complete!")
                 self.plot_cdf_values()
             else:

@@ -132,8 +132,8 @@ def setup_mppi_controller(
     u_guess=None,
     use_GPU=True,
     costs_lambda=0.03,
-    cost_goal_coeff=15.0,
-    cost_safety_coeff=0.8,
+    cost_goal_coeff=18.0,
+    cost_safety_coeff=1.0,
     cost_perturbation_coeff=0.02,
     cost_goal_coeff_final=12.0,
     cost_safety_coeff_final=1.0

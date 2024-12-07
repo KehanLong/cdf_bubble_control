@@ -238,7 +238,7 @@ class RobotSDFVisualizer:
         )
         
         # Create goal marker
-        # self.create_goal_marker(goal_config)
+        self.create_goal_marker(self.goal)
 
     def set_robot_configuration(self, joint_angles):
         if isinstance(joint_angles, torch.Tensor):
@@ -258,11 +258,14 @@ class RobotSDFVisualizer:
         return torch.tensor(joint_states, device=self.device)
 
     def create_goal_marker(self, goal_config):
+        """Create a visible marker for the goal position"""
+        # Create a sphere to mark the goal
         self.goal_marker = p.createVisualShape(
             p.GEOM_SPHERE,
-            radius=0.05,
-            rgbaColor=[0, 1, 0, 0.5]
+            radius=0.02,
+            rgbaColor=[0, 1, 0, 0.7]  # Green, semi-transparent
         )
+        
         self.goal_visual = p.createMultiBody(
             baseVisualShapeIndex=self.goal_marker,
             basePosition=goal_config.cpu().numpy(),
@@ -340,7 +343,7 @@ class RobotSDFVisualizer:
                 init_state=current_state,
                 goal=self.goal,
                 obstaclesX=points_robot,  # Use points in robot frame
-                safety_margin=-0.1,
+                safety_margin=-0.12,
                 batch_size=400
             )
             
@@ -351,9 +354,9 @@ class RobotSDFVisualizer:
             # Capture frame with rotating camera
             view_matrix = p.computeViewMatrixFromYawPitchRoll( 
                 cameraTargetPosition=[0.0, 0.0, 1.5],  
-                distance=2.0,
-                #yaw=(step / time_steps) * 100,  # Rotating camera
-                yaw = 0,
+                distance=2.5,
+                yaw=(step / time_steps) * 60,  # Rotating camera
+                #yaw = 0,
                 pitch=0,
                 roll=0,
                 upAxisIndex=2
@@ -413,6 +416,6 @@ class RobotSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage
-    goal_pos = torch.tensor([0.2, 0.0, 1.5], device='cuda')
-    visualizer = RobotSDFVisualizer(goal_pos, use_gui=False)
+    goal_pos = torch.tensor([0.2, 0.1, 1.05], device='cuda')
+    visualizer = RobotSDFVisualizer(goal_pos, use_gui=True)
     goal_distances, sdf_distances = visualizer.run_demo()
