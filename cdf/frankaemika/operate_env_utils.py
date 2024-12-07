@@ -69,8 +69,8 @@ class FrankaEnvironment:
         
         # Add duck and store its ID
         duck_orientation = p.getQuaternionFromEuler([np.pi/2, 0, np.pi/2])
-        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.4, 0.1, 0.625], 
-                                       duck_orientation, scaling=3.0)
+        self.duck_id = self.add_obstacle("duck_vhacd.urdf", [0.4, 0.15, 0.625], 
+                                       duck_orientation, scaling=2.0)
 
     def add_obstacle(self, urdf_path, position, orientation=None, scaling=1.0):
         """Add obstacle to the environment"""

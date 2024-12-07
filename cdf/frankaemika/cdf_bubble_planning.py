@@ -25,7 +25,7 @@ class BubblePlanner:
         self.epsilon = 5E-2  # Bubble expansion parameter
         self.min_radius = 1E-1
         self.num_samples = 1E5
-        self.max_iterations = 1E4
+        self.max_iterations = 1E5
         self.step_size = 0.2
         
     def sample_config(self) -> np.ndarray:
