@@ -23,9 +23,9 @@ class BubblePlanner:
         
         # Planning parameters
         self.epsilon = 5E-2  # Bubble expansion parameter
-        self.min_radius = 1E-1
-        self.num_samples = 1E5
-        self.max_iterations = 1E5
+        self.min_radius = 1E-2
+        self.num_samples = 5E4
+        self.max_iterations = 5E4
         self.step_size = 0.2
         
     def sample_config(self) -> np.ndarray:
@@ -81,15 +81,16 @@ class BubblePlanner:
                 cdf,
                 self.epsilon,
                 self.min_radius,
-                self.num_samples,
+                int(self.num_samples),
                 mins,
                 maxs,
                 start_point=start_config,
+                batch_size=100,
                 max_retry=500,
                 max_retry_epsilon=100,
-                max_num_iterations=self.max_iterations,
+                max_num_iterations=int(self.max_iterations),
                 inflate_factor=1.0,
-                prc=0.2,
+                prc=0.1,
                 end_point=goal_config
             )
 
@@ -144,20 +145,36 @@ class BubblePlanner:
             end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
             print(f"End index: {end_idx}")
             
+            # if end_idx < 0:
+            #     print("Connecting goal config to graph...")
+            #     overlaps_graph, end_idx = trace_toward_graph_all(
+            #         overlaps_graph, 
+            #         lambda x: self.visualizer.query_cdf(x),
+            #         self.epsilon, 
+            #         self.min_radius, 
+            #         goal_config
+            #     )
+            #     print(f"Number of bubbles after connecting goal: {len(overlaps_graph.vs)}")
+            
+            
+            # Store original goal config
+            actual_goal_config = goal_config.copy()
+            
+            # If end_idx is negative, find closest bubble
             if end_idx < 0:
-                print("Connecting goal config to graph...")
-                overlaps_graph, end_idx = trace_toward_graph_all(
-                    overlaps_graph, 
-                    lambda x: self.visualizer.query_cdf(x),
-                    self.epsilon, 
-                    self.min_radius, 
-                    goal_config
-                )
-                print(f"Number of bubbles after connecting goal: {len(overlaps_graph.vs)}")
+                # Get all bubble centers
+                centers = np.array([v['circle'].centre for v in overlaps_graph.vs])
+                distances_to_goal = np.linalg.norm(centers - goal_config, axis=1)
+                end_idx = np.argmin(distances_to_goal)
+                print(f"No direct connection to goal. Planning to closest bubble at distance {distances_to_goal[end_idx]:.4f}")
+                # Use the center of the closest bubble as our actual endpoint
+                print('End index:', end_idx)
+                actual_goal_config = centers[end_idx].copy()
             
-            print(f"Attempting to find path from {start_idx} to {end_idx}")
+            # Convert graph to directed for path planning
+            overlaps_graph.to_directed()
             
-            # First try to find a direct path
+            # Find shortest path
             path_result = get_shortest_path(
                 lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
                 overlaps_graph,
@@ -167,54 +184,15 @@ class BubblePlanner:
                 return_epath=True,
             )
             
-            print(f"Path result type: {type(path_result)}")
-            print(f"Path result value: {path_result}")
-            
-            # If path_result is a float, it means no path was found
             if isinstance(path_result, float):
-                print("No direct path found. Attempting to find path to closest reachable point...")
-                # Find the bubble closest to the goal
-                distances_to_goal = []
-                for idx in range(len(overlaps_graph.vs)):
-                    bubble_center = overlaps_graph.vs[idx]['circle'].center
-                    dist = np.linalg.norm(bubble_center - goal_config)
-                    distances_to_goal.append((dist, idx))
-                
-                # Sort by distance and get closest bubble
-                closest_idx = min(distances_to_goal, key=lambda x: x[0])[1]
-                print(f"Closest reachable bubble index: {closest_idx}")
-                
-                # Find path to closest reachable point
-                path_result = get_shortest_path(
-                    lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
-                    overlaps_graph,
-                    start_idx,
-                    closest_idx,
-                    cost_name="cost",
-                    return_epath=True,
-                )
-                
-                print(f"Path to closest point result type: {type(path_result)}")
-                print(f"Path to closest point result value: {path_result}")
-                
-                # If still no path found, raise error
-                if isinstance(path_result, float):
-                    raise ValueError("Could not find path even to closest reachable point")
-                    
-                print(f"Found partial path to closest reachable point")
-                
-                # Update goal_config to be the center of the closest reachable bubble
-                goal_config = overlaps_graph.vs[closest_idx]['circle'].center
+                raise ValueError("Could not find path to closest reachable point")
             
-            # At this point, path_result should be a valid path tuple
-            epath = path_result
-            
+            # Generate trajectory
             try:
-                # Use the first element of epath tuple which contains the edge sequence
                 bps, constr_bps = edgeseq_to_traj_constraint_bezier(
-                    overlaps_graph.es[epath[0]], 
+                    overlaps_graph.es[path_result[0]], 
                     start_config, 
-                    goal_config
+                    actual_goal_config  # Use the actual endpoint we're planning to
                 )
                 
                 cost = bezier_cost_all(bps)

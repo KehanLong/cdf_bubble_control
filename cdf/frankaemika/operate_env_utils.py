@@ -356,15 +356,14 @@ class FrankaEnvironment:
         
         return np.array(best_solution)
 
-    def test_ik(self):
+    def test_ik(self, goal_pos):
         """Test the IK solver with a specific target"""
-        target_pos = [0.2, -0.0, 1.5]
-        joint_angles = self.solve_ik(target_pos)
-        
+        joint_angles = self.solve_ik(goal_pos)
+        joint_angles = np.array([-0.1219711, 1.08143656, 1.17792112, -0.19790296, 1.79101167, 2.16419901, 0.])
         if joint_angles is not None:
             print(f"Found solution: {joint_angles}")
             
-            # Visualize solution
+            # Store original joint positions
             original_joints = [p.getJointState(self.robot_id, i)[0] for i in range(7)]
             
             # Move to IK solution
@@ -372,7 +371,7 @@ class FrankaEnvironment:
                 p.resetJointState(self.robot_id, i, joint_angles[i])
             
             # Add visual marker at target position
-            p.addUserDebugPoints([target_pos], [[1,0,0]], pointSize=5)
+            p.addUserDebugPoints([goal_pos], [[1,0,0]], pointSize=5)
             
             input("Press Enter to reset robot position...")
             
@@ -386,9 +385,10 @@ def main():
     """Demo script showing environment usage"""
     env = FrankaEnvironment(gui=True)
     
-    target_pos = [0.2, 0.1, 1.05]
-    joint_angles = env.solve_ik(target_pos)
-    print(f"Joint angles: {joint_angles}")
+    # Test IK with a specific target
+    target_pos = [0.1, 0.0, 1.25]
+    env.test_ik(target_pos)
+    
     # Get point cloud once
     points, _ = env.get_point_cloud(downsample=True)
     print(f"Captured point cloud shape: {points.shape}")

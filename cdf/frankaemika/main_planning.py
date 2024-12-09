@@ -89,7 +89,7 @@ class CDFVisualizer:
             )
         
         # cdf model offset
-        return min_dist.item() + 0.5
+        return min_dist.item() - 0.36
         #return 1.0
     
     def visualize_distances(self, min_dist):
@@ -166,7 +166,7 @@ class CDFVisualizer:
         
         return error
 
-    def execute_planned_path(self, planned_path, duration=5.0, record_video=False):
+    def execute_planned_path(self, planned_path, duration=8.0, record_video=False):
         """Execute planned path and record video"""
         if planned_path is None:
             print("No valid path to execute!")
@@ -176,11 +176,26 @@ class CDFVisualizer:
         num_steps = len(planned_path)
         dt = duration / num_steps
 
-        # Video recording setup - only if needed
+        # Video recording setup
         frames = []
         if record_video:
             width = 1920
             height = 1080
+            # Pre-compute view and projection matrices
+            view_matrix = p.computeViewMatrixFromYawPitchRoll(
+                cameraTargetPosition=[0.0, 0.0, 1.0],
+                distance=2.0,
+                yaw=0,  # Will be updated during rotation
+                pitch=-30,
+                roll=0,
+                upAxisIndex=2
+            )
+            proj_matrix = p.computeProjectionMatrixFOV(
+                fov=60,
+                aspect=width/height,
+                nearVal=0.1,
+                farVal=100.0
+            )
 
         # Initialize tracking variables
         self.cdf_values = []
@@ -188,8 +203,9 @@ class CDFVisualizer:
         self.goal_distances = []
         start_time = time.time()
         
+        # Batch process joint positions for efficiency
         for i, config in enumerate(planned_path):
-            # Set joint positions
+            # Set all joint positions in one batch
             for joint_idx, joint_val in enumerate(config):
                 p.setJointMotorControl2(
                     self.robot_id,
@@ -199,12 +215,10 @@ class CDFVisualizer:
                     force=100
                 )
             
-            # Single simulation step is usually enough
             p.stepSimulation()
             
-            # Only collect metrics every few steps to reduce overhead
-            if i % 2 == 0:  # Adjust this number as needed
-                # Query CDF and record values
+            # Collect metrics less frequently (every 5th step)
+            if i % 5 == 0:
                 min_dist = self.query_cdf(config)
                 current_pos = self.get_end_effector_pos()
                 goal_dist = np.linalg.norm(self.target_pos - current_pos)
@@ -214,22 +228,18 @@ class CDFVisualizer:
                 self.time_steps.append(current_time)
                 self.goal_distances.append(goal_dist)
 
-            # Only record video if requested
-            if record_video:
+            # Record video frames less frequently if needed
+            if record_video and i % 2 == 0:  # Capture every other frame
+                rotating_yaw = (i / len(planned_path)) * 60
+                
+                # Update only yaw in view matrix
                 view_matrix = p.computeViewMatrixFromYawPitchRoll(
                     cameraTargetPosition=[0.0, 0.0, 1.0],
                     distance=2.0,
-                    yaw=0,
+                    yaw=rotating_yaw,
                     pitch=-30,
                     roll=0,
                     upAxisIndex=2
-                )
-                
-                proj_matrix = p.computeProjectionMatrixFOV(
-                    fov=60,
-                    aspect=width/height,
-                    nearVal=0.1,
-                    farVal=100.0
                 )
                 
                 _, _, rgb, _, _ = p.getCameraImage(
@@ -243,10 +253,12 @@ class CDFVisualizer:
                 rgb_array = np.array(rgb)[:, :, :3]
                 frames.append(rgb_array)
 
-        # Save video only if we recorded frames
+        # Save video more efficiently
         if record_video and frames:
             print("Saving video...")
-            imageio.mimsave('robot_execution.mp4', frames, fps=int(1/dt))
+            # Use a more efficient video codec and lower quality
+            imageio.mimsave('robot_execution.mp4', frames, fps=int(1/dt), 
+                           quality=7, macro_block_size=None)
         
         print("Motion complete!")
         self.plot_cdf_values()
@@ -261,51 +273,58 @@ class CDFVisualizer:
         initial_cdf = self.query_cdf(initial_config)
         print(f"Initial config CDF value: {initial_cdf}")
         
-        # Calculate goal configuration using IK
-        target_orn = p.getQuaternionFromEuler([0, -np.pi, 0])
-        goal_config = np.array(p.calculateInverseKinematics(
-            self.robot_id,
-            self.end_effector_index,
-            self.target_pos,
-            target_orn,
-            maxNumIterations=100,
-            residualThreshold=1e-5
-        ))[:7]
-        #print(f"Goal config: {goal_config}")
+        # Use the existing IK solution from FrankaEnvironment
+        goal_config = self.env.solve_ik(self.target_pos)
+        goal_config = np.array([-0.1219711, 1.08143656, 1.17792112, -0.19790296, 1.79101167, 2.16419901, 0.1])
+
+        print(f"Goal config: {goal_config}")
+
+        # if goal_config is not None:
+        #     # Move to IK solution
+        #     for i in range(7):
+        #         p.resetJointState(self.robot_id, i, goal_config[i])        
+        
+        # Check if IK solution reaches target
+        # test_pos = self.get_end_effector_pos()
+        # ik_error = np.linalg.norm(self.target_pos - test_pos)
+        # print(f"IK solution error: {ik_error:.4f}m")
+        # print(f"IK solution end effector position: {test_pos}")
+        # print(f"Target position: {self.target_pos}")
+
         goal_cdf = self.query_cdf(goal_config)
-        #print(f"Goal config CDF value: {goal_cdf}")
+        print(f"Goal config CDF value: {goal_cdf}")
         
         # Check if goal configuration is safe
-        if goal_cdf < 0.05:
-            print("Warning: Goal configuration might be too close to obstacles!")
-            print("Trying to find alternative IK solution...")
+        # if goal_cdf < 0.2:
+        #     print("Warning: Goal configuration might be too close to obstacles!")
+        #     print("Trying to find alternative IK solution...")
             
-            # Try different orientations to find a safer goal configuration
-            orientations = [
-                p.getQuaternionFromEuler([0, -np.pi, 0]),
-                p.getQuaternionFromEuler([0, -np.pi/2, 0]),
-                p.getQuaternionFromEuler([0, -3*np.pi/4, 0]),
-                p.getQuaternionFromEuler([0, -np.pi/4, 0])
-            ]
+        #     # Try different orientations to find a safer goal configuration
+        #     orientations = [
+        #         p.getQuaternionFromEuler([0, -np.pi, 0]),
+        #         p.getQuaternionFromEuler([0, -np.pi/2, 0]),
+        #         p.getQuaternionFromEuler([0, -3*np.pi/4, 0]),
+        #         p.getQuaternionFromEuler([0, -np.pi/4, 0])
+        #     ]
             
-            for orn in orientations:
-                alt_goal_config = np.array(p.calculateInverseKinematics(
-                    self.robot_id,
-                    self.end_effector_index,
-                    self.target_pos,
-                    orn,
-                    maxNumIterations=100,
-                    residualThreshold=1e-5
-                ))[:7]
+        #     for orn in orientations:
+        #         alt_goal_config = np.array(p.calculateInverseKinematics(
+        #             self.robot_id,
+        #             self.end_effector_index,
+        #             self.target_pos,
+        #             orn,
+        #             maxNumIterations=100,
+        #             residualThreshold=1e-5
+        #         ))[:7]
                 
-                alt_cdf = self.query_cdf(alt_goal_config)
-                print(f"Alternative goal config CDF value: {alt_cdf}")
+        #         alt_cdf = self.query_cdf(alt_goal_config)
+        #         print(f"Alternative goal config CDF value: {alt_cdf}")
                 
-                if alt_cdf >= 0.05:
-                    goal_config = alt_goal_config
-                    goal_cdf = alt_cdf
-                    print("Found safer goal configuration!")
-                    break
+        #         if alt_cdf >= 0.05:
+        #             goal_config = alt_goal_config
+        #             goal_cdf = alt_cdf
+        #             print("Found safer goal configuration!")
+        #             break
         
         try:
             # Use new bubble planner
@@ -313,6 +332,14 @@ class CDFVisualizer:
             planned_path, bubbles = self.planner.plan(initial_config, goal_config)
             
             if planned_path is not None:
+                # Verify that the planned path reaches the goal configuration
+                config_difference = np.abs(planned_path[-1] - goal_config)
+                if np.any(config_difference > 0.1):  # 0.1 radians threshold, adjust as needed
+                    print("Warning: Planned path does not reach the goal configuration!")
+                    print(f"Final planned configuration: {planned_path[-1]}")
+                    print(f"Goal configuration: {goal_config}")
+                    print(f"Configuration difference: {config_difference}")
+                
                 print("Executing planned path...")
                 self.execute_planned_path(planned_path, record_video=True)
                 print("Motion complete!")
@@ -352,7 +379,7 @@ class CDFVisualizer:
         plt.close()
 
 def main():
-    target_pos = np.array([0.2, 0.1, 1.05])
+    target_pos = np.array([0.1, 0.0, 1.25])
     visualizer = CDFVisualizer(target_pos, gui_set=False)
     visualizer.run()
 
