@@ -14,8 +14,16 @@ import imageio
 from cdf_bubble_planning import BubblePlanner
 
 class CDFVisualizer:
-    def __init__(self, target_pos, device='cuda', gui_set=True):
+    def __init__(self, target_pos, device='cuda', gui_set=True, random_seed=42):
+        # Set random seeds for reproducibility
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(random_seed)
+            torch.cuda.manual_seed_all(random_seed)  # for multi-GPU
+        
         self.device = device
+        self.random_seed = random_seed  # Store the seed
         
         # Initialize environment using FrankaEnvironment with GUI disabled
         self.env = FrankaEnvironment(gui=gui_set, add_default_objects=True)
@@ -42,8 +50,8 @@ class CDFVisualizer:
         self.time_steps = []
         self.start_time = time.time()
         
-        # Add bubble planner
-        self.planner = BubblePlanner(self)
+        # Add bubble planner with same seed
+        self.planner = BubblePlanner(self, random_seed=self.random_seed)
         
     def load_cdf_model(self):
         """Load the pretrained CDF model"""
@@ -89,7 +97,7 @@ class CDFVisualizer:
             )
         
         # cdf model offset
-        return min_dist.item() - 0.36
+        return min_dist.item() - 0.4
         #return 1.0
     
     def visualize_distances(self, min_dist):
@@ -379,8 +387,10 @@ class CDFVisualizer:
         plt.close()
 
 def main():
+    # Add random seed parameter
+    random_seed = 42  # You can change this value
     target_pos = np.array([0.1, 0.0, 1.25])
-    visualizer = CDFVisualizer(target_pos, gui_set=False)
+    visualizer = CDFVisualizer(target_pos, gui_set=False, random_seed=random_seed)
     visualizer.run()
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ import pybullet as p
 import numpy as np
 import cvxpy
 from dataclasses import dataclass
-from sdf_marching.samplers import get_rapidly_exploring, get_uniform_random
+from sdf_marching.samplers import get_rapidly_exploring, get_uniform_random, get_rapidly_exploring_connect
 from sdf_marching.overlap import position_to_max_circle_idx
 from sdf_marching.samplers.tracing import trace_toward_graph_all
 from sdf_marching.discrete import get_shortest_path
@@ -15,7 +15,10 @@ class Bubble:
     radius: float
     
 class BubblePlanner:
-    def __init__(self, cdf_visualizer):
+    def __init__(self, cdf_visualizer, random_seed=42):
+        # Store the random seed as instance variable
+        self.random_seed = random_seed
+        
         self.visualizer = cdf_visualizer
         self.cdf = cdf_visualizer.cdf
         self.robot_id = cdf_visualizer.robot_id
@@ -75,9 +78,11 @@ class BubblePlanner:
         maxs = np.array([p.getJointInfo(self.robot_id, i)[9] for i in range(7)], dtype=np.float32)
         
         try:
-            # Method 1: RRT-based bubble generation (commented out for now)
-            # print("Starting RRT-based sampling...")
-            overlaps_graph, max_circles, _ = get_rapidly_exploring(
+            # Create random number generator with our seed
+            rng = np.random.default_rng(self.random_seed)
+            
+            # Method 1: RRT-based bubble generation
+            overlaps_graph, max_circles, _ = get_rapidly_exploring_connect(
                 cdf,
                 self.epsilon,
                 self.min_radius,
@@ -91,9 +96,10 @@ class BubblePlanner:
                 max_num_iterations=int(self.max_iterations),
                 inflate_factor=1.0,
                 prc=0.1,
-                end_point=goal_config
+                end_point=goal_config,
+                rng=rng  # Pass the seeded random number generator
             )
-
+            
             # Method 2: Uniform random sampling
             # print("Starting uniform random sampling...")
             # overlaps_graph, max_circles = get_uniform_random(
