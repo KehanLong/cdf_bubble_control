@@ -3,7 +3,8 @@ from numpy import pi
 import torch
 
 class XArmFK:
-    def __init__(self):
+    def __init__(self, device='cuda'):
+        self.device = device
         # DH parameters [a, alpha, d, theta_offset]
         self.dh_params = [
             [0,      -pi/2,  0.267,   0],      # Joint 1: z-offset from base
@@ -14,7 +15,7 @@ class XArmFK:
             [0,      0,      0.097,  0]        # Joint 6: end-effector length
         ]
         
-        # Joint limits in radians
+        # Joint limits in radians - move to device
         self.joint_limits = torch.tensor([
             [-2*pi,    2*pi],     # Joint 1
             [-2.059,   2.059],    # Joint 2
@@ -22,7 +23,7 @@ class XArmFK:
             [-1.745,   3.927],    # Joint 4
             [-2.059,   2.059],    # Joint 5
             [-6.283,   6.283]     # Joint 6
-        ])
+        ], device=self.device)
         
         self.num_joints = 6
         self.fk_mask = [True] * 6  # All joints included
@@ -33,8 +34,8 @@ class XArmFK:
         """
         ct = torch.cos(theta)
         st = torch.sin(theta)
-        ca = torch.cos(torch.tensor(alpha))
-        sa = torch.sin(torch.tensor(alpha))
+        ca = torch.cos(torch.tensor(alpha, device=self.device))
+        sa = torch.sin(torch.tensor(alpha, device=self.device))
         
         return torch.stack([
             torch.stack([ct, -st*ca, st*sa, a*ct], dim=-1),
@@ -52,19 +53,19 @@ class XArmFK:
             Positions of each joint [batch_size, num_joints, 3]
         """
         if not isinstance(q, torch.Tensor):
-            q = torch.tensor(q, dtype=torch.float32)
+            q = torch.tensor(q, dtype=torch.float32, device=self.device)
             
         if q.dim() == 1:
             q = q.unsqueeze(0)  # Add batch dimension
             
         batch_size = q.shape[0]
         positions = []
-        T = torch.eye(4).repeat(batch_size, 1, 1)
+        T = torch.eye(4, device=self.device).repeat(batch_size, 1, 1)
         
         # Add base joint position
-        positions.append(torch.tensor([0., 0., 0.267]).repeat(batch_size, 1))
+        positions.append(torch.tensor([0., 0., 0.267], device=self.device).repeat(batch_size, 1))
         
-        for i in range(self.num_joints-1):  # Only go up to num_joints-1 since we want joint positions
+        for i in range(self.num_joints-1):
             a, alpha, d, theta_offset = self.dh_params[i]
             curr_transform = self.dh_transform(a, alpha, d, q[:, i] + theta_offset)
             T = torch.bmm(T, curr_transform)
