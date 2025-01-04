@@ -12,13 +12,14 @@ from robot_sdf import RobotSDF
 def compute_robot_distances(robot_state, obstaclesX, robot_sdf, batch_size=50):
     """Compute distances between robot and obstacles using RobotSDF."""
     # For debugging: return constant distance with correct shape
-    # if len(robot_state.shape) == 1:
-    #     # Return shape [1, N] where N is number of points
-    #     return torch.ones(1, 500, device=robot_state.device) * 0.5
-    # else:
-    #     # Return shape [B, N] where B is batch size and N is number of points
-    #     return torch.ones(robot_state.shape[0], 500, device=robot_state.device) * 0.5
+    if len(robot_state.shape) == 1:
+        # Return shape [1, N] where N is number of points
+        return torch.ones(1, 500, device=robot_state.device) * 0.5
+    else:
+        # Return shape [B, N] where B is batch size and N is number of points
+        return torch.ones(robot_state.shape[0], 500, device=robot_state.device) * 0.5
 
+'''
     # Add batch dimension if not present
     if len(robot_state.shape) == 1:
         robot_state = robot_state.unsqueeze(0)
@@ -49,6 +50,7 @@ def compute_robot_distances(robot_state, obstaclesX, robot_sdf, batch_size=50):
         torch.cuda.empty_cache()
     
     return torch.cat(all_sdf_values, dim=0)
+'''
 
 def setup_mppi_controller(
     robot_sdf,
@@ -63,7 +65,7 @@ def setup_mppi_controller(
     costs_lambda=0.03,
     cost_goal_coeff=28.0,
     cost_safety_coeff=1.0,
-    cost_perturbation_coeff=0.03,
+    cost_perturbation_coeff=0.02,
     cost_goal_coeff_final=12.0,
     cost_safety_coeff_final=1.0
 ):
@@ -187,7 +189,7 @@ def test_mppi():
         
         # Initial and goal states
         initial_state = torch.zeros(6, device=device)
-        goal_state = torch.tensor([0.2, -0.4, 0.6], device=device) + torch.tensor([-0.6, 0.0, 0.625], device=device)
+        goal_state = torch.tensor([0.3961982, -0.3110882, 0.5596867], device=device, dtype=torch.float32) + torch.tensor([-0.6, 0.0, 0.625], device=device)
         
         print("\nInitial Configuration:")
         print(f"Initial joint state: {initial_state}")

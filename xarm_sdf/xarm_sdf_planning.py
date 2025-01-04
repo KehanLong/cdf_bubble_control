@@ -453,8 +453,8 @@ if __name__ == "__main__":
     goal_pos = torch.tensor([0.6, 0.1, 0.4], device='cuda')
     
     # Try MPPI
-    # mppi_visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='mppi')
-    # mppi_distances = mppi_visualizer.run_demo()
+    mppi_visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='mppi')
+    mppi_distances = mppi_visualizer.run_demo()
     
     # Try RRT
     rrt_visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='rrt')

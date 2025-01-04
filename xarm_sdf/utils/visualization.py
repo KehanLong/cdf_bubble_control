@@ -116,15 +116,59 @@ class SDFVisualizer:
         # Show scene
         scene.show()
 
+    def create_scene(self, joint_angles, show_meshes=True, resolution=64):
+        """Create scene with robot SDF visualization without showing it"""
+        # Create scene
+        scene = trimesh.Scene()
+        
+        # Get transforms using FK
+        q = joint_angles.cpu().reshape(-1)
+        if len(q) != 6:
+            raise ValueError(f"Expected 6 joint angles, got {len(q)}")
+        transforms = fk_xarm6_torch(q)
+        transforms_dict = {
+            'base': np.eye(4),
+            'link1': transforms[0].cpu().numpy(),
+            'link2': transforms[1].cpu().numpy(),
+            'link3': transforms[2].cpu().numpy(),
+            'link4': transforms[3].cpu().numpy(),
+            'link5': transforms[4].cpu().numpy(),
+            'link6': transforms[5].cpu().numpy()
+        }
+        
+        # Extract and transform level surface for each link
+        for i, model in enumerate(self.robot_sdf.models):
+            vertices, triangles = self.extract_level_surface_for_link(model, resolution)
+            vertices = vertices * self.robot_sdf.scales[i].cpu().numpy()
+            vertices = vertices + self.robot_sdf.offsets[i].cpu().numpy()
+            
+            link_mesh = trimesh.Trimesh(vertices=vertices, faces=triangles)
+            link_name = f'link{i}'
+            if link_name in transforms_dict:
+                link_mesh.apply_transform(transforms_dict[link_name])
+            link_mesh.visual.face_colors = self.sdf_colors[i]
+            scene.add_geometry(link_mesh)
+        
+        if show_meshes:
+            for i, mesh in enumerate(self.meshes):
+                link_name = Path(mesh.metadata['file_name']).stem.split('_')[0]
+                if link_name in transforms_dict:
+                    mesh_copy = mesh.copy()
+                    mesh_copy.apply_transform(transforms_dict[link_name])
+                    mesh_copy.visual.face_colors = self.mesh_colors[i]
+                    scene.add_geometry(mesh_copy)
+        
+        return scene
+
 if __name__ == "__main__":
     device = 'cuda'
     visualizer = SDFVisualizer(device)
     
     # Test different poses
     poses = [
-        torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], device=device),  # Home pose
-        torch.tensor([np.pi/4, 0, -np.pi/2, 0.0, 0.0, 0.0], device=device),  # Bent pose
-        torch.tensor([np.pi/2, 0.0, -np.pi/4, np.pi/4, np.pi/2, 0.0], device=device)  # Another pose
+        torch.tensor([0.0, 0., 0., 0.0, 0.0, 0.0], device=device),  # Home pose
+        torch.tensor([-2.6487477, -1.0901253, -1.1788788, 2.7880065, 1.3651353, 3.2989674], device=device),  # Bent pose
+        #torch.tensor([np.pi/2, 0.0, -np.pi/4, np.pi/4, np.pi/2, 0.0], device=device)  # Another pose
     ]
     
     # Visualize each pose

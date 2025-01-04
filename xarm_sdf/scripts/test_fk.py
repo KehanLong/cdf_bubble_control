@@ -13,6 +13,8 @@ sys.path.append(project_root)
 
 from xarm_sdf.models.xarm_model import XArmFK
 
+from xarm_sdf.models.xarm6_differentiable_fk import fk_xarm6_torch
+
 def debug_fk_discrepancy():
     # Initialize PyBullet
     physicsClient = p.connect(p.GUI)
@@ -38,12 +40,18 @@ def debug_fk_discrepancy():
         rgbaColor=[0, 1, 0, 1]  # Green for PyBullet FK
     )
     
+    torch_fk_marker = p.createVisualShape(
+        shapeType=p.GEOM_SPHERE,
+        radius=0.02,
+        rgbaColor=[0, 0, 1, 1]  # Blue for torch FK
+    )
+    
     # Test configurations
     test_configs = [
         [0, 0, 0, 0, 0, 0],  # Home position
         [0.5, 0.5, 0.0, 0.0, 0.5, 0.1],
         [1.0, -1.0, 1.1, -0.3, -0.2, -1.0],
-        [0.0, 0.0, 0.0, 0.0, 0.6, 0.5],
+        [0.17, 0.61, -0.86, 1.59, 0.28, -1.75]
     ]
     
     for i, joint_angles in enumerate(test_configs):
@@ -62,7 +70,11 @@ def debug_fk_discrepancy():
         config = torch.tensor([joint_angles], device='cuda')
         our_pos = robot_model.fkine(config).squeeze()[-1, :].cpu().numpy()
         
-        # Create visual markers
+        # Get torch FK - convert to float32 tensor for torch FK
+        config_torch = torch.tensor(joint_angles, dtype=torch.float32, device='cuda')
+        torch_pos = fk_xarm6_torch(config_torch)[-1][:3, 3].cpu().numpy()
+        
+        # Create visual markers for all three implementations
         p.createMultiBody(
             baseMass=0,
             baseVisualShapeIndex=our_fk_marker,
@@ -74,10 +86,19 @@ def debug_fk_discrepancy():
             baseVisualShapeIndex=pybullet_fk_marker,
             basePosition=pybullet_pos,
         )
+
+        p.createMultiBody(
+            baseMass=0,
+            baseVisualShapeIndex=torch_fk_marker,
+            basePosition=torch_pos.tolist(),
+        )
         
         print("Our FK position:", our_pos)
         print("PyBullet position:", pybullet_pos)
-        print("Difference:", our_pos - np.array(pybullet_pos))
+        print("Torch FK position:", torch_pos)
+        print("Difference (Our - PyBullet):", our_pos - np.array(pybullet_pos))
+        print("Difference (Our - Torch):", our_pos - torch_pos)
+        print("Difference (Torch - PyBullet):", torch_pos - np.array(pybullet_pos))
         
         # Print joint info for debugging
         for j in range(p.getNumJoints(robotId)):
