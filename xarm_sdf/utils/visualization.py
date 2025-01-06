@@ -11,6 +11,7 @@ project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
 from models.xarm6_differentiable_fk import fk_xarm6_torch
+from data.generate_sdf import combine_gripper_meshes
 from robot_sdf import RobotSDF
 
 class SDFVisualizer:
@@ -21,16 +22,23 @@ class SDFVisualizer:
         # Load meshes for comparison
         project_root = Path(__file__).parent.parent
         mesh_dir = project_root / "xarm_description" / "meshes" / "xarm6" / "visual"
+        gripper_dir = project_root / "xarm_description" / "xarm_gripper" / "meshes"
+        
+        # Load arm meshes
         mesh_files = sorted(glob.glob(str(mesh_dir / "*.stl")))
         self.meshes = [trimesh.load(mf) for mf in mesh_files]
         
-        # Colors for visualization
+        # Load gripper mesh
+        self.gripper_mesh = combine_gripper_meshes(gripper_dir)
+        self.meshes.append(self.gripper_mesh)
+        
+        # Colors for visualization (extended for gripper)
         self.mesh_colors = [[128,128,128,100], [255,0,0,100], [0,255,0,100], 
                           [0,0,255,100], [255,255,0,100], [255,0,255,100], 
-                          [0,255,255,100]]
+                          [0,255,255,100], [192,192,192,100]]  # Added gripper color
         self.sdf_colors = [[128,128,128,255], [255,0,0,255], [0,255,0,255], 
                           [0,0,255,255], [255,255,0,255], [255,0,255,255], 
-                          [0,255,255,255]]
+                          [0,255,255,255], [192,192,192,255]]  # Added gripper color
     
     def extract_level_surface_for_link(self, model, resolution=64):
         """Extract zero-level surface for a single link"""
@@ -71,7 +79,7 @@ class SDFVisualizer:
         q = joint_angles.cpu().reshape(-1)
         if len(q) != 6:
             raise ValueError(f"Expected 6 joint angles, got {len(q)}")
-        transforms = fk_xarm6_torch(q)
+        transforms = fk_xarm6_torch(q, with_gripper=True)
         transforms_dict = {
             'base': np.eye(4),
             'link1': transforms[0].cpu().numpy(),
@@ -79,7 +87,8 @@ class SDFVisualizer:
             'link3': transforms[2].cpu().numpy(),
             'link4': transforms[3].cpu().numpy(),
             'link5': transforms[4].cpu().numpy(),
-            'link6': transforms[5].cpu().numpy()
+            'link6': transforms[5].cpu().numpy(),
+            'link7': transforms[6].cpu().numpy()
         }
         
         # Extract and transform level surface for each link
@@ -133,7 +142,8 @@ class SDFVisualizer:
             'link3': transforms[2].cpu().numpy(),
             'link4': transforms[3].cpu().numpy(),
             'link5': transforms[4].cpu().numpy(),
-            'link6': transforms[5].cpu().numpy()
+            'link6': transforms[5].cpu().numpy(),
+            'link7': transforms[6].cpu().numpy()
         }
         
         # Extract and transform level surface for each link

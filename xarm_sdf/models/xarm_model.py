@@ -3,8 +3,9 @@ from numpy import pi
 import torch
 
 class XArmFK:
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', with_gripper=True):
         self.device = device
+        self.with_gripper = with_gripper
         # DH parameters [a, alpha, d, theta_offset]
         self.dh_params = [
             [0,      -pi/2,  0.267,   0],      # Joint 1: z-offset from base
@@ -14,6 +15,11 @@ class XArmFK:
             [0.076,  -pi/2,  0,      0],       # Joint 5: wrist rotation
             [0,      0,      0.097,  0]        # Joint 6: end-effector length
         ]
+        
+        if with_gripper:
+            # Add gripper DH parameters (fixed transform relative to link6)
+            # The gripper extends about 0.145m from link6's frame
+            self.dh_params.append([0, 0, 0.145, 0])  # Gripper: additional length in z direction
         
         # Joint limits in radians - move to device
         self.joint_limits = torch.tensor([
@@ -26,7 +32,8 @@ class XArmFK:
         ], device=self.device)
         
         self.num_joints = 6
-        self.fk_mask = [True] * 6  # All joints included
+        self.num_links = 7 if with_gripper else 6  # Include gripper if specified
+        self.fk_mask = [True] * self.num_links  # All joints included
         
     def dh_transform(self, a, alpha, d, theta):
         """
@@ -50,7 +57,7 @@ class XArmFK:
         Args:
             q: joint angles [batch_size, 6]
         Returns:
-            Positions of each joint [batch_size, num_joints, 3]
+            Positions of each joint [batch_size, num_links, 3]
         """
         if not isinstance(q, torch.Tensor):
             q = torch.tensor(q, dtype=torch.float32, device=self.device)
@@ -65,18 +72,20 @@ class XArmFK:
         # Add base joint position
         positions.append(torch.tensor([0., 0., 0.267], device=self.device).repeat(batch_size, 1))
         
-        for i in range(self.num_joints-1):
+        # Process arm joints
+        for i in range(self.num_joints):
             a, alpha, d, theta_offset = self.dh_params[i]
             curr_transform = self.dh_transform(a, alpha, d, q[:, i] + theta_offset)
             T = torch.bmm(T, curr_transform)
             positions.append(T[:, :3, 3])
+        
+        # Add gripper position if needed
+        if self.with_gripper:
+            a, alpha, d, theta_offset = self.dh_params[-1]
+            T = torch.bmm(T, self.dh_transform(a, alpha, d, torch.zeros_like(q[:, 0])))
+            positions.append(T[:, :3, 3])
             
-        # Add end effector position
-        a, alpha, d, theta_offset = self.dh_params[-1]
-        T = torch.bmm(T, self.dh_transform(a, alpha, d, q[:, -1] + theta_offset))
-        positions.append(T[:, :3, 3])
-            
-        return torch.stack(positions, dim=1)  # [batch_size, num_joints, 3]
+        return torch.stack(positions, dim=1)  # [batch_size, num_links, 3]
 
     def check_joint_limits(self, q):
         """

@@ -16,7 +16,7 @@ class XArmEnvironment:
         # Load basic environment
         self.plane_id = p.loadURDF("plane.urdf")
         self.robot_base_pos = [-0.6, 0.0, 0.625]
-        self.robot_id = p.loadURDF("xarm_description/xarm6_robot.urdf", 
+        self.robot_id = p.loadURDF("xarm_description/xarm6_with_gripper.urdf",  # or xarm6_robot.urdf
                                  self.robot_base_pos,
                                  useFixedBase=True)
         self.table_id = p.loadURDF("table/table.urdf", [0, 0, 0])

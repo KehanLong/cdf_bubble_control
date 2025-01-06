@@ -11,8 +11,10 @@ from training.network import SDFNetwork
 from models.xarm6_differentiable_fk import fk_xarm6_torch
 
 class RobotSDF:
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', with_gripper=True):
         self.device = device
+        self.with_gripper = with_gripper
+        self.num_links = 8 if with_gripper else 7
         
         # Load all trained SDF models
         self.models = self._load_sdf_models()
@@ -21,8 +23,12 @@ class RobotSDF:
         data_dir = project_root / "data" / "sdf_data"
         self.offsets = []
         self.scales = []
-        for i in range(7):  # 7 links including base
-            data = np.load(data_dir / f"link_{i}_link{i}.npz")
+        # Loading links (7 arm links + optional gripper)
+        for i in range(self.num_links):  
+            if i < 7:
+                data = np.load(data_dir / f"link_{i}_link{i}.npz")
+            else:
+                data = np.load(data_dir / f"link_{i}_gripper.npz")
             # Explicitly convert to float32
             self.offsets.append(torch.from_numpy(data['original_center']).float().to(device))
             self.scales.append(torch.tensor(data['original_scale'], dtype=torch.float32).to(device))
@@ -31,10 +37,11 @@ class RobotSDF:
         self.scales = torch.stack(self.scales)     # [num_links]
     
     def _load_sdf_models(self):
-        """Load trained models for all links"""
+        """Load trained models for all links including optional gripper"""
         models = []
         model_dir = project_root / "trained_models"
-        for i in range(7):  # 7 links including base
+        # Loading models (7 arm links + optional gripper)
+        for i in range(self.num_links):  
             model_path = model_dir / f"link_{i}" / "best_model.pt"
             checkpoint = torch.load(model_path)
             
@@ -62,14 +69,14 @@ class RobotSDF:
         # Get transforms for each link
         transforms_list = []
         for b in range(B):
-            link_transforms = fk_xarm6_torch(joint_angles[b])
+            link_transforms = fk_xarm6_torch(joint_angles[b], with_gripper=self.with_gripper)  # Returns transforms including gripper if with_gripper=True
             base_transform = torch.eye(4, dtype=torch.float32, device=self.device)
             transforms_list.append([base_transform] + link_transforms)
         
         transforms = torch.stack([torch.stack(t) for t in transforms_list])
         
         # Transform points to each link's local frame
-        points_expanded = points.unsqueeze(1).expand(-1, 7, -1, -1)
+        points_expanded = points.unsqueeze(1).expand(-1, self.num_links, -1, -1)
         inv_transforms = torch.inverse(transforms)
         local_points = torch.einsum('bkij,bknj->bkni', inv_transforms, 
                                   torch.cat([points_expanded, 
@@ -77,8 +84,8 @@ class RobotSDF:
         local_points = local_points[...,:3]
         
         # Scale points
-        scaled_points = ((local_points - self.offsets.view(1, 7, 1, 3)) / 
-                        self.scales.view(1, 7, 1, 1)).to(dtype=torch.float32)
+        scaled_points = ((local_points - self.offsets.view(1, self.num_links, 1, 3)) / 
+                        self.scales.view(1, self.num_links, 1, 1)).to(dtype=torch.float32)
         
         # Query each link's SDF
         sdf_values = []
@@ -87,8 +94,8 @@ class RobotSDF:
             sdf = model(points_i).reshape(B, N, 1)
             sdf_values.append(sdf)
         
-        sdf_values = torch.stack(sdf_values, dim=1)  # [B, 7, N, 1]
-        sdf_values = sdf_values.squeeze(-1) * self.scales.view(1, 7, 1)
+        sdf_values = torch.stack(sdf_values, dim=1)  # [B, num_links, N, 1]
+        sdf_values = sdf_values.squeeze(-1) * self.scales.view(1, self.num_links, 1)
         
         # Get minimum distance and corresponding link
         min_sdf, link_ids = torch.min(sdf_values, dim=1)  # [B, N]

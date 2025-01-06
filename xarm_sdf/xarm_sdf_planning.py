@@ -42,7 +42,7 @@ def plot_distances(goal_distances, estimated_obstacle_distances, obst_radius, dt
     plt.close()
 
 class XArmSDFVisualizer:
-    def __init__(self, ee_goal, use_gui=True, initial_horizon=12, planner_type='mppi'):
+    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='mppi'):
         # Initialize environment
         self.env = XArmEnvironment(gui=use_gui)
         self.physics_client = self.env.client
@@ -70,11 +70,11 @@ class XArmSDFVisualizer:
             self.mppi_controller = setup_mppi_controller(
                 robot_sdf=self.robot_sdf,
                 use_GPU=(self.device=='cuda'),
-                samples=300,
+                samples=400,
                 initial_horizon=self.initial_horizon
             )
         elif planner_type == 'rrt':
-            # Initialize RRT planner
+            # Initialize RRT planner with adjusted step size
             joint_limits = (
                 self.robot_fk.joint_limits[:, 0].cpu().numpy(),  # lower limits
                 self.robot_fk.joint_limits[:, 1].cpu().numpy()   # upper limits
@@ -83,10 +83,26 @@ class XArmSDFVisualizer:
                 robot_sdf=self.robot_sdf,
                 robot_fk=self.robot_fk,
                 joint_limits=joint_limits,
-                step_size=0.1,
-                max_iter=10000,
+                step_size=0.2,  # Increased from 0.1 to allow larger initial steps
+                max_nodes=1e6,
                 batch_size=1000,
                 goal_bias=0.1,
+                device=self.device
+            )
+        elif planner_type == 'rrt_connect':
+            # Initialize RRT-Connect planner
+            joint_limits = (
+                self.robot_fk.joint_limits[:, 0].cpu().numpy(),
+                self.robot_fk.joint_limits[:, 1].cpu().numpy()
+            )
+            self.rrt_planner = RRTConnectPlanner(
+                robot_sdf=self.robot_sdf,
+                robot_fk=self.robot_fk,
+                joint_limits=joint_limits,
+                step_size=0.2,  # Same adaptive step size as RRT
+                max_nodes=1e6,
+                batch_size=1000,
+                goal_bias=0.1,  # Less important for RRT-Connect
                 device=self.device
             )
         else:
@@ -106,6 +122,12 @@ class XArmSDFVisualizer:
         #     basePosition=[0, 0, 0],
         #     baseOrientation=[0, 0, 0, 1]
         # )
+
+        # Precompute point cloud
+        self.points_robot = self.env.get_point_cloud(downsample=True)
+        self.points_robot = self.points_robot.to(dtype=torch.float32)
+        while self.points_robot.dim() > 2:
+            self.points_robot = self.points_robot.squeeze(0)
 
     def set_robot_configuration(self, joint_angles):
         if isinstance(joint_angles, torch.Tensor):
@@ -183,7 +205,7 @@ class XArmSDFVisualizer:
             [0, 0, 0, 1]
         )
 
-    def _find_goal_configuration(self, goal_pos: torch.Tensor, n_samples: int = 1e5, threshold: float = 0.1) -> Optional[np.ndarray]:
+    def _find_goal_configuration(self, goal_pos: torch.Tensor, n_samples: int = 1e6, threshold: float = 0.05) -> Optional[np.ndarray]:
         """Find a valid goal configuration for a given goal position using random sampling"""
         print(f"\nSearching for goal configuration:")
         print(f"Target position: {goal_pos.cpu().numpy()}")
@@ -232,18 +254,9 @@ class XArmSDFVisualizer:
                     print(f"End-effector error: {distances[best_idx].item():.4f} meters")
                     
                     # Verify collision-free
-                    points_robot = self.env.get_point_cloud(downsample=True)
-                    # Convert point cloud to float32 and ensure correct shape
-                    points_robot = points_robot.to(dtype=torch.float32)
-                    # Remove extra dimensions if they exist
-                    while points_robot.dim() > 2:
-                        points_robot = points_robot.squeeze(0)
-                    
-                    print(f"Point cloud shape after processing: {points_robot.shape}")
-                    
                     try:
                         sdf_values = self.robot_sdf.query_sdf(
-                            points=points_robot.unsqueeze(0),  # [1, N, 3]
+                            points=self.points_robot.unsqueeze(0),
                             joint_angles=torch.tensor(best_config, device=self.device, dtype=torch.float32).unsqueeze(0),
                             return_gradients=False
                         )
@@ -270,7 +283,7 @@ class XArmSDFVisualizer:
                             
                     except Exception as e:
                         print(f"Error in collision checking:")
-                        print(f"Point cloud shape: {points_robot.shape}")
+                        print(f"Point cloud shape: {self.points_robot.shape}")
                         print(f"Error message: {str(e)}")
                         continue
                     
@@ -328,14 +341,8 @@ class XArmSDFVisualizer:
         dt = 1.0 / fps
         step = 0
         
-        # Get point cloud for collision checking
-        points_robot = self.env.get_point_cloud(downsample=True)
-        points_robot = points_robot.to(dtype=torch.float32)
-        while points_robot.dim() > 2:
-            points_robot = points_robot.squeeze(0)
-        
-        if self.planner_type == 'rrt':
-            # RRT planning code...
+        if self.planner_type in ['rrt', 'rrt_connect']:
+            # RRT/RRT-Connect planning code
             goal_config = self._find_goal_configuration(self.goal - self.base_pos)
             if goal_config is None:
                 print("Failed to find valid goal configuration!")
@@ -345,12 +352,12 @@ class XArmSDFVisualizer:
             trajectory = self.rrt_planner.plan(
                 start_config=current_state.cpu().numpy(),
                 goal_config=goal_config,
-                obstacle_points=points_robot
+                obstacle_points=self.points_robot
             )
             if not trajectory:
-                print("RRT planning failed!")
+                print(f"{self.planner_type.upper()} planning failed!")
                 return goal_distances, sdf_distances
-            print(f"RRT path found with {len(trajectory)} waypoints")
+            print(f"{self.planner_type.upper()} path found with {len(trajectory)} waypoints")
             
             # Execute trajectory
             traj_idx = 0
@@ -367,8 +374,8 @@ class XArmSDFVisualizer:
                 goal_distances.append(goal_dist.detach().cpu().numpy())
                 
                 sdf_values = self.robot_sdf.query_sdf(
-                    points=points_robot.unsqueeze(0),
-                    joint_angles=next_config_tensor.unsqueeze(0),  # Use same tensor
+                    points=self.points_robot.unsqueeze(0),
+                    joint_angles=next_config_tensor.unsqueeze(0),
                     return_gradients=False
                 )
                 min_sdf = sdf_values.min()
@@ -400,8 +407,8 @@ class XArmSDFVisualizer:
                     U=U,
                     init_state=current_state,
                     goal=self.goal,
-                    obstaclesX=points_robot,
-                    safety_margin=-0.1
+                    obstaclesX=self.points_robot,
+                    safety_margin=0.01
                 )
                 
                 # Update robot state
@@ -416,7 +423,7 @@ class XArmSDFVisualizer:
                 goal_distances.append(goal_dist.detach().cpu().numpy())
                 
                 sdf_values = self.robot_sdf.query_sdf(
-                    points=points_robot.unsqueeze(0),
+                    points=self.points_robot.unsqueeze(0),
                     joint_angles=current_state.unsqueeze(0),
                     return_gradients=False
                 )
@@ -450,12 +457,10 @@ class XArmSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage
-    goal_pos = torch.tensor([0.6, 0.1, 0.4], device='cuda')
+    goal_pos = torch.tensor([0.1, 0.5, 0.6], device='cuda')
     
-    # Try MPPI
-    mppi_visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='mppi')
-    mppi_distances = mppi_visualizer.run_demo()
+    # Select planner type ('mppi', 'rrt', or 'rrt_connect')
+    planner_type = 'rrt'  # Change this to use RRT-Connect
     
-    # Try RRT
-    rrt_visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='rrt')
-    rrt_distances = rrt_visualizer.run_demo()
+    visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type)
+    distances = visualizer.run_demo()

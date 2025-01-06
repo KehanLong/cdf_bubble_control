@@ -225,15 +225,29 @@ if __name__ == "__main__":
     model_dir = project_root / "trained_models"
     
     # Train each link
-    for link_id in range(7):  # 0 to 6 for base + 6 links
-        print(f"\nTraining Link {link_id}")
-        data_path = data_dir / f"link_{link_id}_link{link_id}.npz"
+    # for link_id in range(7):  # 0 to 6 for base + 6 links
+    #     print(f"\nTraining Link {link_id}")
+    #     data_path = data_dir / f"link_{link_id}_link{link_id}.npz"
         
-        trainer = SDFTrainer(
-            link_id=link_id,
-            data_path=data_path,
-            model_save_path=model_dir,
-            device='cuda',
-            seed=SEED
-        )
-        trainer.train(num_epochs=300)
+    #     trainer = SDFTrainer(
+    #         link_id=link_id,
+    #         data_path=data_path,
+    #         model_save_path=model_dir,
+    #         device='cuda',
+    #         seed=SEED
+    #     )
+    #     trainer.train(num_epochs=300)
+
+    # Train only the gripper (link 7)
+    link_id = 7  # gripper
+    print(f"\nTraining Gripper (Link {link_id})")
+    data_path = data_dir / f"link_{link_id}_gripper.npz"
+    
+    trainer = SDFTrainer(
+        link_id=link_id,
+        data_path=data_path,
+        model_save_path=model_dir,
+        device='cuda',
+        seed=SEED
+    )
+    trainer.train(num_epochs=300)

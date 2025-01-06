@@ -37,12 +37,14 @@ def transl_torch(x, y, z, dtype=torch.float32, device='cuda'):
     T[2, 3] = z
     return T
 
-def fk_xarm6_torch(q):
+def fk_xarm6_torch(q, with_gripper=True):
     """
     Forward kinematics of xArm6 in PyTorch,
     matching the URDF exactly.
-    q: 1D tensor of shape [6].
-    returns: 4x4 transform from base (link_base) to link6.
+    Args:
+        q: 1D tensor of shape [6].
+        with_gripper: if True, include gripper transform
+    returns: list of 4x4 transforms from base to each link (including gripper if with_gripper=True)
     """
     assert q.shape == (6,)
     device = q.device
@@ -91,7 +93,16 @@ def fk_xarm6_torch(q):
     T05 = T04 @ T45
     T06 = T05 @ T56
 
-    return [T01, T02, T03, T04, T05, T06]
+    transforms = [T01, T02, T03, T04, T05, T06]
+    
+    if with_gripper:
+        # Gripper transform relative to link6 (from URDF)
+        # Add translation in z-direction for gripper length
+        T6G_fixed = transl_torch(0.0, 0.0, 0.145, dtype=q.dtype, device=device)
+        T0G = T06 @ T6G_fixed
+        transforms.append(T0G)
+
+    return transforms
 
 
 def get_urdf_transform(xyz, rpy):

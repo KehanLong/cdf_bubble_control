@@ -13,7 +13,7 @@ class RRTBasePlanner:
                  robot_fk,
                  joint_limits: Tuple[np.ndarray, np.ndarray],
                  step_size: float = 0.1,
-                 max_iter: int = 10000,
+                 max_nodes: int = 1e6,
                  batch_size: int = 1000,
                  goal_bias: float = 0.1,
                  safety_margin: float = 0.02,
@@ -23,7 +23,7 @@ class RRTBasePlanner:
         self.joint_lower_limits = joint_limits[0]
         self.joint_upper_limits = joint_limits[1]
         self.step_size = step_size
-        self.max_iter = max_iter
+        self.max_nodes = max_nodes
         self.batch_size = batch_size
         self.goal_bias = goal_bias
         self.safety_margin = safety_margin
@@ -57,11 +57,18 @@ class RRTBasePlanner:
         return torch.ones(len(configs), dtype=torch.bool, device=self.device)
 
     def _extend_towards(self, from_config: np.ndarray, to_config: np.ndarray) -> np.ndarray:
-        """Extend from one configuration towards another by step_size"""
+        """Extend with adaptive step size based on distance to goal"""
         diff = to_config - from_config
         dist = np.linalg.norm(diff)
-        if dist > self.step_size:
-            diff = diff / dist * self.step_size
+        
+        # Make step size proportional to distance, but never larger than base step_size
+        adaptive_step = min(self.step_size * (dist / 2.0), self.step_size)
+        
+        # Ensure minimum step size
+        adaptive_step = max(adaptive_step, self.step_size * 0.1)
+        
+        if dist > adaptive_step:
+            diff = diff / dist * adaptive_step
         return from_config + diff
 
     def _get_ee_position(self, config: np.ndarray) -> np.ndarray:
@@ -73,18 +80,11 @@ class RRTBasePlanner:
         return ee_pos.squeeze().cpu().numpy()
 
 class RRTPlanner(RRTBasePlanner):
-    def plan(self, 
-            start_config: np.ndarray,
-            goal_config: np.ndarray,
-            obstacle_points: Optional[torch.Tensor] = None,
-            rng=None) -> List[np.ndarray]:
+    def plan(self, start_config: np.ndarray, goal_config: np.ndarray,
+            obstacle_points: Optional[torch.Tensor] = None, rng=None) -> List[np.ndarray]:
         """Plan path using standard RRT"""
         if rng is None:
             rng = np.random.default_rng()
-
-        # Convert inputs to float32 if needed
-        start_config = start_config.astype(np.float32)
-        goal_config = goal_config.astype(np.float32)
 
         start_time = time.time()
         print("\nStarting RRT planning...")
@@ -95,17 +95,18 @@ class RRTPlanner(RRTBasePlanner):
         
         # Statistics tracking
         closest_dist_to_goal = float('inf')
-        n_nodes = 1
+        attempts = 0
         
-        for iter_idx in range(self.max_iter):
+        while len(tree) < self.max_nodes:
+            attempts += 1
+            n_nodes_before = len(tree)
+            
             # Generate batch of samples
             goal_biased_count = int(self.batch_size * self.goal_bias)
             regular_count = self.batch_size - goal_biased_count
             
             # Generate random samples and add goal bias
             random_configs = self._get_uniform_random_configs(regular_count, rng)
-            
-            # Add goal-biased samples
             if goal_biased_count > 0:
                 goal_biased_configs = np.tile(goal_config, (goal_biased_count, 1))
                 random_configs = np.vstack([random_configs, goal_biased_configs])
@@ -122,36 +123,34 @@ class RRTPlanner(RRTBasePlanner):
             
             # Add valid configurations to tree
             for config, nearest_idx, is_valid in zip(new_configs, nearest_indices, valid_mask):
-                if is_valid:
+                if is_valid and len(tree) < self.max_nodes:
                     tree.append((config, nearest_idx))
-                    n_nodes += 1
                     
                     # Check if reached goal
                     dist_to_goal = np.linalg.norm(config - goal_config)
                     closest_dist_to_goal = min(closest_dist_to_goal, dist_to_goal)
                     
-                    if dist_to_goal < 0.1:  # threshold in configuration space
+                    if dist_to_goal < self.step_size:  # Close enough to goal
                         path = self._extract_path(tree, len(tree)-1)
                         elapsed_time = time.time() - start_time
                         print(f"\nPath found!")
+                        print(f"Attempts: {attempts}")
                         print(f"Time: {elapsed_time:.2f}s")
-                        print(f"Iterations: {iter_idx + 1}")
-                        print(f"Tree size: {n_nodes} nodes")
+                        print(f"Tree size: {len(tree)} nodes")
                         print(f"Path length: {len(path)} waypoints")
                         return path
             
             # Update KD-tree
             tree_kdtree = cKDTree(np.array([node[0] for node in tree]))
             
-            # Log progress more frequently
-            if iter_idx % 2 == 0:
-                print(f"Iter: {iter_idx}, Nodes: {n_nodes}, Best dist: {closest_dist_to_goal:.4f}")
+            # Print progress
+            if attempts % 2 == 0:
+                n_nodes = len(tree)
+                nodes_added = n_nodes - n_nodes_before
+                print(f"Attempts: {attempts} | Nodes: {n_nodes} | Added: {nodes_added} | Best dist: {closest_dist_to_goal:.4f}")
         
-        elapsed_time = time.time() - start_time
-        print(f"\nPlanning failed after {elapsed_time:.2f}s")
-        print(f"Tree size: {n_nodes} nodes")
+        print(f"\nFailed to find path after reaching max nodes ({self.max_nodes})")
         print(f"Best distance to goal: {closest_dist_to_goal:.4f}")
-        
         return []
 
     def _extract_path(self, tree: List[Tuple], goal_idx: int) -> List[np.ndarray]:
@@ -165,110 +164,134 @@ class RRTPlanner(RRTBasePlanner):
     
 
 class RRTConnectPlanner(RRTBasePlanner):
-    def plan(self,
-            start_config: np.ndarray,
-            goal_config: np.ndarray,
-            obstacle_points: Optional[torch.Tensor] = None,
-            rng=None) -> List[np.ndarray]:
-        """
-        Plan path using RRT-Connect
-        """
+    def plan(self, start_config: np.ndarray, goal_config: np.ndarray,
+            obstacle_points: Optional[torch.Tensor] = None, rng=None) -> List[np.ndarray]:
+        """Plan path using RRT-Connect algorithm"""
         if rng is None:
             rng = np.random.default_rng()
 
         start_time = time.time()
+        print("\nStarting RRT-Connect planning...")
         
-        # Initialize both trees
+        # Initialize two trees (start_tree, goal_tree)
         start_tree = [(start_config, -1)]
         goal_tree = [(goal_config, -1)]
-        
         start_kdtree = cKDTree(np.array([start_config]))
         goal_kdtree = cKDTree(np.array([goal_config]))
         
-        for iter_idx in range(self.max_iter):
-            # Alternate between trees
-            if iter_idx % 2 == 0:
-                success, path = self._extend_tree(
-                    start_tree, start_kdtree,
-                    goal_tree, goal_kdtree,
-                    obstacle_points, rng
-                )
-            else:
-                success, path = self._extend_tree(
-                    goal_tree, goal_kdtree,
-                    start_tree, start_kdtree,
-                    obstacle_points, rng
-                )
-                if success:
-                    path = list(reversed(path))
-            
-            if success:
-                logger.info(f"Trees connected after {iter_idx} iterations and {time.time() - start_time:.2f}s")
-                return path
-            
-            if iter_idx % 10 == 0:
-                logger.info(f"Iteration {iter_idx}, Trees size: {len(start_tree)}, {len(goal_tree)}")
+        attempts = 0
         
-        logger.warning("Failed to find path")
+        while len(start_tree) + len(goal_tree) < self.max_nodes:
+            attempts += 1
+            
+            # Alternate between trees
+            if len(start_tree) <= len(goal_tree):
+                source_tree, target_tree = start_tree, goal_tree
+                source_kdtree, target_kdtree = start_kdtree, goal_kdtree
+                growing_from_start = True
+            else:
+                source_tree, target_tree = goal_tree, start_tree
+                source_kdtree, target_kdtree = goal_kdtree, start_kdtree
+                growing_from_start = False
+            
+            # Generate random samples
+            random_configs = self._get_uniform_random_configs(self.batch_size, rng)
+            
+            # Find nearest neighbors in source tree
+            distances, nearest_indices = source_kdtree.query(random_configs, k=1)
+            
+            # Extend source tree
+            new_configs = np.array([
+                self._extend_towards(source_tree[idx][0], sample)
+                for sample, idx in zip(random_configs, nearest_indices)
+            ])
+            
+            # Check collisions
+            valid_mask = self._check_collision_batch(new_configs, obstacle_points)
+            
+            # Try to connect trees
+            for new_config, nearest_idx, is_valid in zip(new_configs, nearest_indices, valid_mask):
+                if not is_valid:
+                    continue
+                    
+                # Add to source tree
+                source_tree.append((new_config, nearest_idx))
+                new_source_idx = len(source_tree) - 1
+                
+                # Try to connect to target tree
+                success, bridge_path = self._connect_trees(
+                    new_config, 
+                    target_tree,
+                    target_kdtree,
+                    obstacle_points
+                )
+                
+                if success:
+                    # Extract and combine paths
+                    if growing_from_start:
+                        start_path = self._extract_path(source_tree, new_source_idx)
+                        goal_path = self._extract_path(target_tree, bridge_path[-1][1])
+                        full_path = start_path + [node[0] for node in bridge_path[1:]]
+                    else:
+                        start_path = self._extract_path(target_tree, bridge_path[-1][1])
+                        goal_path = self._extract_path(source_tree, new_source_idx)
+                        full_path = start_path + [node[0] for node in reversed(bridge_path[:-1])]
+                    
+                    elapsed_time = time.time() - start_time
+                    print(f"\nPath found!")
+                    print(f"Attempts: {attempts}")
+                    print(f"Time: {elapsed_time:.2f}s")
+                    print(f"Tree sizes: {len(start_tree)}, {len(goal_tree)} nodes")
+                    print(f"Path length: {len(full_path)} waypoints")
+                    return full_path
+            
+            # Update KD-trees
+            start_kdtree = cKDTree(np.array([node[0] for node in start_tree]))
+            goal_kdtree = cKDTree(np.array([node[0] for node in goal_tree]))
+            
+            # Print progress
+            if attempts % 2 == 0:
+                print(f"Attempts: {attempts} | Nodes: {len(start_tree) + len(goal_tree)}")
+        
+        print(f"\nFailed to find path after reaching max nodes ({self.max_nodes})")
         return []
 
-    def _extend_tree(self, 
-                    growing_tree: List[Tuple],
-                    growing_kdtree: cKDTree,
-                    target_tree: List[Tuple],
-                    target_kdtree: cKDTree,
-                    obstacle_points: Optional[torch.Tensor],
-                    rng) -> Tuple[bool, List[np.ndarray]]:
-        """Extend growing_tree and try to connect to target_tree"""
-        # Generate batch of samples
-        random_configs = self._get_uniform_random_configs(self.batch_size, rng)
+    def _connect_trees(self, config: np.ndarray, target_tree: List[Tuple], 
+                      target_kdtree: cKDTree, obstacle_points: Optional[torch.Tensor]) -> Tuple[bool, List[Tuple]]:
+        """Try to connect to target tree using greedy extension"""
+        bridge_path = []
+        current_config = config
         
-        # Find nearest neighbors
-        distances, nearest_indices = growing_kdtree.query(random_configs, k=1)
-        
-        # Extend towards samples
-        new_configs = np.array([
-            self._extend_towards(growing_tree[idx][0], sample)
-            for sample, idx in zip(random_configs, nearest_indices)
-        ])
-        
-        # Check collisions
-        valid_mask = self._check_collision_batch(new_configs, obstacle_points)
-        
-        # Try to connect trees
-        for config, nearest_idx, is_valid in zip(new_configs, nearest_indices, valid_mask):
-            if is_valid:
-                growing_tree.append((config, nearest_idx))
+        while True:
+            # Find nearest node in target tree
+            distances, nearest_idx = target_kdtree.query([current_config], k=1)
+            target_config = target_tree[nearest_idx[0]][0]
+            
+            # Extend towards target
+            new_config = self._extend_towards(current_config, target_config)
+            
+            # Check if extension is valid
+            if not self._check_collision_batch(new_config.reshape(1, -1), obstacle_points)[0]:
+                return False, bridge_path
+            
+            # Add to bridge path
+            bridge_path.append((new_config, nearest_idx[0]))
+            
+            # Check if reached target tree
+            if np.linalg.norm(new_config - target_config) < self.step_size:
+                return True, bridge_path
                 
-                # Find nearest config in target tree
-                target_dist, target_idx = target_kdtree.query(config.reshape(1, -1), k=1)
-                
-                if target_dist < self.step_size:
-                    # Trees connected! Extract path
-                    return True, self._extract_connecting_path(
-                        growing_tree, len(growing_tree)-1,
-                        target_tree, target_idx[0]
-                    )
-        
-        return False, []
+            current_config = new_config
 
-    def _extract_connecting_path(self,
-                               tree1: List[Tuple],
-                               idx1: int,
-                               tree2: List[Tuple],
-                               idx2: int) -> List[np.ndarray]:
-        """Extract path connecting two trees"""
-        path1 = []
-        current_idx = idx1
-        while current_idx != -1:
-            path1.append(tree1[current_idx][0])
-            current_idx = tree1[current_idx][1]
-        path1 = list(reversed(path1))
+    def _extract_path(self, tree: List[Tuple], node_idx: int) -> List[np.ndarray]:
+        """Extract path from tree by following parent indices back to root"""
+        path = []
+        current_idx = node_idx
         
-        path2 = []
-        current_idx = idx2
-        while current_idx != -1:
-            path2.append(tree2[current_idx][0])
-            current_idx = tree2[current_idx][1]
-        
-        return path1 + path2
+        while current_idx != -1:  # -1 is the parent index of root node
+            path.append(tree[current_idx][0])  # Add configuration
+            current_idx = tree[current_idx][1]  # Move to parent
+            
+        return list(reversed(path))  # Reverse to get start-to-goal order
+
+

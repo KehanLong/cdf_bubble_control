@@ -14,29 +14,151 @@ sys.path.append(str(project_root))
 from models.xarm6_differentiable_fk import fk_xarm6_torch
 
 
-def generate_sdf_data(mesh_dir, output_dir, num_points=100000):
-    """Generate SDF data for each link of the xArm robot"""
+def combine_gripper_meshes(gripper_dir):
+    """
+    Combine all gripper meshes into one in their default configuration
+    Using all components including fingers and inner knuckles
+    """
+    gripper_files = sorted(glob.glob(str(gripper_dir / "*.STL")))
+    print(f"Found {len(gripper_files)} gripper mesh files:")
+    print([Path(f).stem for f in gripper_files])
+    
+    # Define gripper parts and their transforms (same as visualization)
+    gripper_parts = {
+        'base_link': {
+            'parent': None,
+            'offset': np.eye(4)
+        },
+        'left_outer_knuckle': {
+            'parent': 'base_link',
+            'offset': np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0.035],
+                [0, 0, 1, 0.059098],
+                [0, 0, 0, 1]
+            ])
+        },
+        'right_outer_knuckle': {
+            'parent': 'base_link',
+            'offset': np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, -0.035],
+                [0, 0, 1, 0.059098],
+                [0, 0, 0, 1]
+            ])
+        },
+        'left_finger': {
+            'parent': 'left_outer_knuckle',
+            'offset': np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0.000465],
+                [0, 0, 1, -0.017059],
+                [0, 0, 0, 1]
+            ])
+        },
+        'right_finger': {
+            'parent': 'right_outer_knuckle',
+            'offset': np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, -0.000465],
+                [0, 0, 1, -0.017059],
+                [0, 0, 0, 1]
+            ])
+        },
+        'left_inner_knuckle': {
+            'parent': 'base_link',
+            'offset': np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0.02],
+                [0, 0, 1, 0.074098],
+                [0, 0, 0, 1]
+            ])
+        },
+        'right_inner_knuckle': {
+            'parent': 'base_link',
+            'offset': np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, -0.02],
+                [0, 0, 1, 0.074098],
+                [0, 0, 0, 1]
+            ])
+        }
+    }
+    
+    # Calculate transforms for all parts
+    transforms = {}
+    transforms['base_link'] = np.eye(4)
+    
+    # Process parts in order (parents before children)
+    for part_name, part_info in gripper_parts.items():
+        parent = part_info['parent']
+        if parent is None:
+            transform = part_info['offset']
+        else:
+            transform = transforms[parent] @ part_info['offset']
+        transforms[part_name] = transform
+    
+    # Combine meshes with their transforms
+    combined = None
+    for gf in gripper_files:
+        name = Path(gf).stem
+        if name in transforms:
+            mesh = trimesh.load(gf)
+            mesh.apply_transform(transforms[name])
+            
+            if combined is None:
+                combined = mesh
+            else:
+                combined = trimesh.util.concatenate([combined, mesh])
+    
+    return combined
+
+def generate_sdf_data(mesh_dir, gripper_dir, output_dir, num_points=100000, gripper_only=False):
+    """
+    Generate SDF data for each link of the xArm robot and/or the combined gripper
+    Args:
+        mesh_dir: directory containing arm mesh files
+        gripper_dir: directory containing gripper mesh files
+        output_dir: directory to save SDF data
+        num_points: number of points to sample for SDF
+        gripper_only: if True, only process the gripper
+    """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
-    mesh_files = glob.glob(os.path.join(mesh_dir, "*.stl"))
-    mesh_files = sorted(mesh_files)
+    if not gripper_only:
+        # Load and process arm meshes
+        mesh_files = sorted(glob.glob(os.path.join(mesh_dir, "*.stl")))
+        print(f"Found {len(mesh_files)} arm mesh files in {mesh_dir}")
+        print("Arm mesh files:", [Path(f).name for f in mesh_files])
+        arm_meshes = [trimesh.load(mf) for mf in mesh_files]
+        mesh_names = [Path(mf).stem for mf in mesh_files]
+    else:
+        arm_meshes = []
+        mesh_names = []
     
-    print(f"Found {len(mesh_files)} mesh files in {mesh_dir}")
-    print("Mesh files:", [Path(f).name for f in mesh_files])
+    # Process gripper
+    print("\nProcessing gripper meshes...")
+    gripper_mesh = combine_gripper_meshes(gripper_dir)
+    
+    # Add gripper to processing list
+    all_meshes = arm_meshes + [gripper_mesh]
+    mesh_names = mesh_names + ['gripper']
     
     # Create list to store output files
     output_files = []
     
-    for link_id, mf in enumerate(mesh_files):
-        mesh_name = Path(mf).stem
-        print(f"\nProcessing {mesh_name}")
+    # Start from the appropriate link_id
+    start_id = 0 if not gripper_only else 7
+    
+    for i, (mesh, mesh_name) in enumerate(zip(all_meshes, mesh_names)):
+        link_id = start_id + i
+        print(f"\nProcessing {mesh_name} as link_{link_id}")
         
-        # Load mesh and store original scale
-        mesh = trimesh.load(mf)
+        # Store original scale and center
         original_center = mesh.bounding_box.centroid
         original_scale = np.max(np.linalg.norm(mesh.vertices-original_center, axis=1))
         
-        # Now normalize for SDF computation
+        # Normalize for SDF computation
         mesh = mesh_to_sdf.scale_to_unit_sphere(mesh)
         
         # Get normalized mesh metadata
@@ -236,14 +358,22 @@ def visualize_sdf_data(data):
 if __name__ == "__main__":
     project_root = Path(__file__).parent.parent
     mesh_dir = project_root / "xarm_description" / "meshes" / "xarm6" / "visual"
+    gripper_dir = project_root / "xarm_description" / "xarm_gripper" / "meshes"
     output_dir = project_root / "data" / "sdf_data"
     
     # Comment out data generation when not needed
     # generate_sdf_data(str(mesh_dir), str(output_dir))
     
     # Visualize with different configurations
-    zero_angles = torch.zeros(6)
-    bent_angles = torch.tensor([np.pi/4, np.pi/4, -np.pi/4, 0.0, 0.0, 0.0])
+    # zero_angles = torch.zeros(6)
+    # bent_angles = torch.tensor([np.pi/4, np.pi/4, -np.pi/4, 0.0, 0.0, 0.0])
     
-    visualize_robot_sdf(output_dir, num_links=7, joint_angles=zero_angles)
-    visualize_robot_sdf(output_dir, num_links=7, joint_angles=bent_angles)
+    # visualize_robot_sdf(output_dir, num_links=7, joint_angles=zero_angles)
+    # visualize_robot_sdf(output_dir, num_links=7, joint_angles=bent_angles)
+
+    # Generate SDF data for gripper only
+    # generate_sdf_data(mesh_dir, gripper_dir, output_dir, gripper_only=True)
+    
+    # Optionally visualize the gripper SDF data
+    gripper_data = np.load(output_dir / 'link_7_gripper.npz')
+    visualize_sdf_data(gripper_data)

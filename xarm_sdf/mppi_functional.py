@@ -12,14 +12,13 @@ from robot_sdf import RobotSDF
 def compute_robot_distances(robot_state, obstaclesX, robot_sdf, batch_size=50):
     """Compute distances between robot and obstacles using RobotSDF."""
     # For debugging: return constant distance with correct shape
-    if len(robot_state.shape) == 1:
-        # Return shape [1, N] where N is number of points
-        return torch.ones(1, 500, device=robot_state.device) * 0.5
-    else:
-        # Return shape [B, N] where B is batch size and N is number of points
-        return torch.ones(robot_state.shape[0], 500, device=robot_state.device) * 0.5
+    # if len(robot_state.shape) == 1:
+    #     # Return shape [1, N] where N is number of points
+    #     return torch.ones(1, 500, device=robot_state.device) * 0.5
+    # else:
+    #     # Return shape [B, N] where B is batch size and N is number of points
+    #     return torch.ones(robot_state.shape[0], 500, device=robot_state.device) * 0.5
 
-'''
     # Add batch dimension if not present
     if len(robot_state.shape) == 1:
         robot_state = robot_state.unsqueeze(0)
@@ -50,7 +49,6 @@ def compute_robot_distances(robot_state, obstaclesX, robot_sdf, batch_size=50):
         torch.cuda.empty_cache()
     
     return torch.cat(all_sdf_values, dim=0)
-'''
 
 def setup_mppi_controller(
     robot_sdf,
@@ -58,22 +56,25 @@ def setup_mppi_controller(
     input_size=6,
     initial_horizon=10,
     samples=100,
-    control_bound=1.0,
+    control_bound=3.0,
     dt=0.05,
     u_guess=None,
     use_GPU=True,
     costs_lambda=0.03,
-    cost_goal_coeff=28.0,
-    cost_safety_coeff=1.0,
+    cost_goal_coeff=50.0,
+    cost_safety_coeff=0.4,
     cost_perturbation_coeff=0.02,
-    cost_goal_coeff_final=12.0,
-    cost_safety_coeff_final=1.0
+    action_smoothing=0.5,
+    noise_sigma=None
 ):
     device = 'cuda' if use_GPU and torch.cuda.is_available() else 'cpu'
     
-    control_mu = torch.zeros(input_size, device=device)
-    control_cov = 2 * torch.eye(input_size, device=device)
-    control_cov_inv = torch.inverse(control_cov)
+    # Initialize noise parameters
+    if noise_sigma is None:
+        noise_sigma = 2 * torch.eye(input_size, device=device)
+    noise_mu = torch.zeros(input_size, device=device)
+    noise_dist = MultivariateNormal(noise_mu, covariance_matrix=noise_sigma)
+    control_cov_inv = torch.inverse(noise_sigma)
     
     if u_guess is not None:
         U = u_guess
@@ -88,17 +89,19 @@ def setup_mppi_controller(
         costs = costs / costs.max()
         weights = torch.exp(-1.0/costs_lambda * costs)
         normalization_factor = weights.sum()
-        weights = weights.view(-1, 1, 1)  # Reshape to [samples, 1, 1] for proper broadcasting
+        weights = weights.view(-1, 1, 1)
+        
+        # Add action smoothing while keeping the original weighting scheme
         weighted_perturbation = (perturbation * weights).sum(dim=0)
-        return U + weighted_perturbation / normalization_factor
+        new_U = U + weighted_perturbation / normalization_factor
+        return (1.0 - action_smoothing) * U + action_smoothing * new_U
     
     def compute_rollout_costs(key, U, init_state, goal, obstaclesX, safety_margin, batch_size=10):
         """MPPI rollout with smaller batches"""
         torch.cuda.empty_cache()  # Clear at start
         
-        # Sample noise - detach to ensure no gradient history
-        dist = MultivariateNormal(control_mu, control_cov)
-        perturbation = dist.sample((samples, initial_horizon)).detach()
+        # Sample noise using distribution
+        perturbation = noise_dist.sample((samples, initial_horizon)).detach()
         perturbation = torch.clamp(perturbation, -1., 1.)
         
         # Add perturbation to nominal control sequence
@@ -136,7 +139,7 @@ def setup_mppi_controller(
                     batch_costs += cost_goal_coeff * goal_dist
                     
                     # Safety cost with smaller batch size
-                    distances = compute_robot_distances(current_state, obstaclesX, robot_sdf, batch_size=5)
+                    distances = compute_robot_distances(current_state, obstaclesX, robot_sdf, batch_size=50)
                     min_distance = distances.min(dim=1)[0]
                     
                     batch_costs += cost_safety_coeff / torch.clamp(min_distance - safety_margin, min=0.01)
