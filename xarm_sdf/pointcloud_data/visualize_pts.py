@@ -53,7 +53,7 @@ def plot_points(points, title="Point Cloud", color='b'):
 
 def plot_points_with_robot(points, joint_angles, title="Point Cloud with Robot", color='b', resolution=64):
     """
-    Plot 3D points together with the robot visualization
+    Plot 3D points together with the robot visualization using trained SDF
     Args:
         points: Nx3 array of points
         joint_angles: tensor of 6 joint angles in radians
@@ -64,8 +64,8 @@ def plot_points_with_robot(points, joint_angles, title="Point Cloud with Robot",
     # Initialize visualizer
     visualizer = SDFVisualizer('cuda')
     
-    # Create scene with robot
-    scene = visualizer.create_scene(joint_angles, show_meshes=True, resolution=resolution)
+    # Create scene with robot SDF
+    scene = visualizer.visualize_sdf(joint_angles, show_meshes=False, resolution=resolution)
     
     # Add point cloud to the scene
     point_cloud = trimesh.PointCloud(points, colors=[0, 0, 255, 255])  # Blue points
@@ -76,41 +76,44 @@ def plot_points_with_robot(points, joint_angles, title="Point Cloud with Robot",
 
 def main():
     # Get the directory containing point cloud data
-    data_dir = os.path.join(os.path.dirname(__file__))
+    data_dir = os.path.dirname(__file__)
     
-    # Specifically look for final_downsampled_points.npy
-    filename = "final_downsampled_points.npy"
-    filepath = os.path.join(data_dir, filename)
+    # List of files to visualize
+    files_to_visualize = [
+        "final_downsampled_points.npy",
+        "robot_filtered_points.npy",
+        "transformed_points.npy"
+    ]
     
-    try:
-        points = np.load(filepath)
+    # Robot pose for visualization
+    joint_angles = torch.tensor([0.0, -0.5, -0.5, 0., 0.85, 0.0], device='cuda')
+    
+    # Process each file
+    for file_name in files_to_visualize:
+        filepath = os.path.join(data_dir, file_name)
         
-        # If points include RGB values (4th column), remove it
-        if points.shape[1] > 3:
-            points = points[:, :3]
-        
-        # Print original points info
-        print("Original points:")
-        print_points_info(points, filename)
-        
-        # Filter points with y >= 0.2
-        filtered_points = points[points[:, 1] >= 0.2]
-        
-        # Print filtered points info
-        print("\nFiltered points (y >= 0.2):")
-        print_points_info(filtered_points, filename)
-        
-        # Save filtered points
-        filtered_filepath = os.path.join(data_dir, "filtered_final_points.npy")
-        np.save(filtered_filepath, filtered_points)
-        print(f"\nSaved filtered points to: {filtered_filepath}")
-        
-        # Visualize both original and filtered points
-        plot_points(points, title="Original Points")
-        plot_points(filtered_points, title="Filtered Points (y >= 0.2)")
-        
-    except Exception as e:
-        print(f"Error processing file: {e}")
+        try:
+            if not os.path.exists(filepath):
+                print(f"Could not find file: {filepath}")
+                continue
+                
+            points = np.load(filepath)
+            print(f"\nProcessing: {file_name}")
+            
+            # If points include RGB values (4th column), remove it
+            if points.shape[1] > 3:
+                points = points[:, :3]
+            
+            # Print information about the points
+            print_points_info(points, file_name)
+            
+            # Visualize points with robot SDF
+            plot_points_with_robot(points, 
+                                 joint_angles, 
+                                 title=f"Points from: {file_name}")
+            
+        except Exception as e:
+            print(f"Error processing file {file_name}: {str(e)}")
 
 if __name__ == "__main__":
     main()

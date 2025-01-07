@@ -18,7 +18,7 @@ class XArmFK:
         
         if with_gripper:
             # Add gripper DH parameters (fixed transform relative to link6)
-            # The gripper extends about 0.145m from link6's frame
+            # The gripper extends about 0.145m from link6 
             self.dh_params.append([0, 0, 0.145, 0])  # Gripper: additional length in z direction
         
         # Joint limits in radians - move to device

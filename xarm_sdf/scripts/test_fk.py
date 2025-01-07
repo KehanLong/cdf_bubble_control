@@ -21,7 +21,7 @@ def debug_fk_discrepancy():
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     
     # Load robot
-    urdf_path = os.path.join(project_root, "xarm_sdf", "xarm_description", "xarm6_robot.urdf")
+    urdf_path = os.path.join(project_root, "xarm_sdf", "xarm_description", "xarm6_with_gripper.urdf")
     robotId = p.loadURDF(urdf_path, [0, 0, 0], useFixedBase=True)
     
     # Initialize our FK model
@@ -63,7 +63,7 @@ def debug_fk_discrepancy():
             p.resetJointState(robotId, j+1, joint_angles[j])
         
         # Get PyBullet FK
-        link_state = p.getLinkState(robotId, 6)
+        link_state = p.getLinkState(robotId, 7)
         pybullet_pos = link_state[0]
         
         # Get our FK

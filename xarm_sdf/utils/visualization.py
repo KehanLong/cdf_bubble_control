@@ -88,7 +88,7 @@ class SDFVisualizer:
             'link4': transforms[3].cpu().numpy(),
             'link5': transforms[4].cpu().numpy(),
             'link6': transforms[5].cpu().numpy(),
-            'link7': transforms[6].cpu().numpy()
+            'link7': transforms[5].cpu().numpy()   # gripper base frame
         }
         
         # Extract and transform level surface for each link
@@ -121,9 +121,8 @@ class SDFVisualizer:
                     mesh_copy.apply_transform(transforms_dict[link_name])
                     mesh_copy.visual.face_colors = self.mesh_colors[i]
                     scene.add_geometry(mesh_copy)
-        
-        # Show scene
-        scene.show()
+
+        return scene
 
     def create_scene(self, joint_angles, show_meshes=True, resolution=64):
         """Create scene with robot SDF visualization without showing it"""
@@ -143,7 +142,7 @@ class SDFVisualizer:
             'link4': transforms[3].cpu().numpy(),
             'link5': transforms[4].cpu().numpy(),
             'link6': transforms[5].cpu().numpy(),
-            'link7': transforms[6].cpu().numpy()
+            'link7': transforms[5].cpu().numpy()
         }
         
         # Extract and transform level surface for each link
@@ -185,4 +184,5 @@ if __name__ == "__main__":
     for i, pose in enumerate(poses):
         print(f"\nVisualizing pose {i+1}:")
         print(f"Joint angles (radians): {pose.cpu().numpy()}")
-        visualizer.visualize_sdf(pose, show_meshes=False, resolution=64)
+        scene = visualizer.visualize_sdf(pose, show_meshes=False, resolution=64)
+        scene.show()
