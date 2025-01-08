@@ -14,7 +14,8 @@ class RobotSDF:
     def __init__(self, device='cuda', with_gripper=True):
         self.device = device
         self.with_gripper = with_gripper
-        self.num_links = 8 if with_gripper else 7
+        # Start from link 1 (skip base link 0)
+        self.num_links = 7 if with_gripper else 6
         
         # Load all trained SDF models
         self.models = self._load_sdf_models()
@@ -23,8 +24,8 @@ class RobotSDF:
         data_dir = project_root / "data" / "sdf_data"
         self.offsets = []
         self.scales = []
-        # Loading links (7 arm links + optional gripper)
-        for i in range(self.num_links):  
+        # Loading links (6 movable arm links + optional gripper), starting from link 1
+        for i in range(1, self.num_links + 1):  # Note: i now starts from 1
             if i < 7:
                 data = np.load(data_dir / f"link_{i}_link{i}.npz")
             else:
@@ -40,8 +41,8 @@ class RobotSDF:
         """Load trained models for all links including optional gripper"""
         models = []
         model_dir = project_root / "trained_models"
-        # Loading models (7 arm links + optional gripper)
-        for i in range(self.num_links):  
+        # Loading models (6 movable arm links + optional gripper), starting from link 1
+        for i in range(1, self.num_links + 1):  # Note: i now starts from 1
             model_path = model_dir / f"link_{i}" / "best_model.pt"
             checkpoint = torch.load(model_path)
             
@@ -51,7 +52,7 @@ class RobotSDF:
             models.append(model)
         return models
     
-    def query_sdf(self, points, joint_angles, return_link_id=False, return_gradients=False, gradient_method='finite_diff'):
+    def query_sdf(self, points, joint_angles, return_link_id=False, return_gradients=False, gradient_method='analytic'):
         """
         Query SDF for points given joint angles
         Args:
@@ -66,18 +67,26 @@ class RobotSDF:
         if return_gradients and (gradient_method == 'analytic' or gradient_method == 'both'):
             joint_angles.requires_grad_(True)
         
-        # Get transforms for each link
+        # Get transforms for each link (now only for movable links)
         transforms_list = []
         for b in range(B):
-            link_transforms = fk_xarm6_torch(joint_angles[b], with_gripper=self.with_gripper)  # Returns transforms including gripper if with_gripper=True
-            base_transform = torch.eye(4, dtype=torch.float32, device=self.device)
-            transforms_list.append([base_transform] + link_transforms)
+            # Get transforms from FK function
+            link_transforms = fk_xarm6_torch(joint_angles[b], with_gripper=self.with_gripper)
+            
+            # If with_gripper, use Link 6's transform for the gripper (skip the last transform)
+            if self.with_gripper:
+                # Use all transforms except the last one, and repeat Link 6's transform
+                transforms = link_transforms[:-1] + [link_transforms[-2]]
+            else:
+                transforms = link_transforms
+                
+            transforms_list.append(transforms)
         
         transforms = torch.stack([torch.stack(t) for t in transforms_list])
         
-        # Transform points to each link's local frame
+        # Transform points to each link's local frame (no need for base transform)
         points_expanded = points.unsqueeze(1).expand(-1, self.num_links, -1, -1)
-        inv_transforms = torch.inverse(transforms)
+        inv_transforms = torch.linalg.inv(transforms)
         local_points = torch.einsum('bkij,bknj->bkni', inv_transforms, 
                                   torch.cat([points_expanded, 
                                            torch.ones_like(points_expanded[...,:1])], dim=-1))
@@ -91,7 +100,8 @@ class RobotSDF:
         sdf_values = []
         for i, model in enumerate(self.models):
             points_i = scaled_points[:,i].reshape(B*N, 3)
-            sdf = model(points_i).reshape(B, N, 1)
+            with torch.set_grad_enabled(True):
+                sdf = model(points_i).reshape(B, N, 1)
             sdf_values.append(sdf)
         
         sdf_values = torch.stack(sdf_values, dim=1)  # [B, num_links, N, 1]
@@ -161,6 +171,23 @@ class RobotSDF:
                 result.append({'analytic': analytic, 'finite_diff': finite})
         
         return tuple(result) if len(result) > 1 else result[0]
+    
+    def test_differentiability(self):
+        # Create test inputs
+        points = torch.randn(1, 3, 3, device=self.device)  # [batch, num_points, 3]
+        joint_angles = torch.zeros(1, 6, device=self.device, requires_grad=True)
+        
+        # Forward pass
+        sdf = self.query_sdf(points, joint_angles)
+        
+        # Check if gradients flow
+        try:
+            loss = sdf.sum()
+            loss.backward()
+            print("Gradient computation successful!")
+            print(f"Joint angles gradient: {joint_angles.grad}")
+        except Exception as e:
+            print(f"Gradient computation failed: {str(e)}")
 
 if __name__ == "__main__":
     device = 'cuda'
@@ -200,5 +227,9 @@ if __name__ == "__main__":
         print("  Analytic:", grads['analytic'][0,i].detach().cpu().numpy())
         print("  Finite diff:", grads['finite_diff'][0,i].detach().cpu().numpy())
         print(f"  Max difference: {(grads['analytic'][0,i] - grads['finite_diff'][0,i]).abs().max().item():.6f}")
+    
+    # Add this to your test code
+    robot_sdf = RobotSDF(device='cuda')
+    robot_sdf.test_differentiability()
     
     

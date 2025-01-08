@@ -9,11 +9,14 @@ def rotx_torch(rx, device='cuda'):
         rx = torch.tensor(rx, dtype=torch.float32, device=device)
     c = torch.cos(rx)
     s = torch.sin(rx)
-    R = torch.tensor([
-        [1,  0,  0,  0],
-        [0,  c, -s,  0],
-        [0,  s,  c,  0],
-        [0,  0,  0,  1]], dtype=rx.dtype, device=device)
+    # Build matrix directly using the computed sin and cos values
+    R = torch.zeros((4, 4), dtype=rx.dtype, device=device)
+    R[0, 0] = 1.0
+    R[1, 1] = c
+    R[1, 2] = -s
+    R[2, 1] = s
+    R[2, 2] = c
+    R[3, 3] = 1.0
     return R
 
 def rotz_torch(rz, device='cuda'):
@@ -22,16 +25,20 @@ def rotz_torch(rz, device='cuda'):
         rz = torch.tensor(rz, dtype=torch.float32, device=device)
     c = torch.cos(rz)
     s = torch.sin(rz)
-    R = torch.tensor([
-        [ c, -s,  0,  0],
-        [ s,  c,  0,  0],
-        [ 0,  0,  1,  0],
-        [ 0,  0,  0,  1]], dtype=rz.dtype, device=device)
+    # Build matrix directly using the computed sin and cos values
+    R = torch.zeros((4, 4), dtype=rz.dtype, device=device)
+    R[0, 0] = c
+    R[0, 1] = -s
+    R[1, 0] = s
+    R[1, 1] = c
+    R[2, 2] = 1.0
+    R[3, 3] = 1.0
     return R
 
 def transl_torch(x, y, z, dtype=torch.float32, device='cuda'):
     """Translation by (x, y, z), as a 4x4 transform."""
-    T = torch.eye(4, dtype=dtype, device=device)
+    T = torch.zeros((4, 4), dtype=dtype, device=device)
+    T[0, 0] = T[1, 1] = T[2, 2] = T[3, 3] = 1.0
     T[0, 3] = x
     T[1, 3] = y
     T[2, 3] = z
@@ -178,8 +185,15 @@ def compare_with_urdf(q=None):
 
 if __name__ == "__main__":
     # Test zero configuration
-    print("\nTesting zero configuration:")
-    compare_with_urdf()
+    # print("\nTesting zero configuration:")
+    # compare_with_urdf()
+    
+    q = torch.zeros(6, requires_grad=True)
+    transforms = fk_xarm6_torch(q)
+    end_position = transforms[-1][:3, 3]  # Get the end-effector position
+    print(end_position)
+    end_position.sum().backward()  # Compute gradients
+    print(q.grad)  # This will show the gradients w.r.t. joint angles
     
 
 

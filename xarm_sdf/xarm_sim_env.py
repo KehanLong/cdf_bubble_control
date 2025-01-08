@@ -31,6 +31,17 @@ class XArmEnvironment:
         # Initialize SDF model
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.sdf_model = RobotSDF(device=self.device)
+        
+        # Set initial joint positions
+        self.initial_joint_positions = [0, -0.5, -0.5, 0, 0.95, 0]  # Modified from all zeros
+        
+        # Reset joints to initial positions
+        for i in range(6):
+            p.resetJointState(
+                self.robot_id,
+                i+1,  # Joint indices start from 1
+                self.initial_joint_positions[i]
+            )
     
     def add_default_objects(self):
         """Add default obstacles to the environment"""
@@ -118,6 +129,12 @@ class XArmEnvironment:
         distances = np.linalg.norm(points_world - np.array(self.robot_base_pos), axis=1)
         radius_mask = distances > 0.2  # Filter out points within 0.2 radius
         points_world = points_world[radius_mask]
+        
+        # Add end effector filtering
+        end_effector_state = p.getLinkState(self.robot_id, 7)  # Get end effector link state
+        ee_distances = np.linalg.norm(points_world - np.array(end_effector_state[0]), axis=1)
+        ee_radius_mask = ee_distances > 0.25  # Filter out points within 0.15m of end effector
+        points_world = points_world[ee_radius_mask]
         
         # Add downsampling
         if downsample and len(points_world) > 0:

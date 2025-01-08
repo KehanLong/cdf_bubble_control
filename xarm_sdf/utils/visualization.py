@@ -13,11 +13,25 @@ sys.path.append(str(project_root))
 from models.xarm6_differentiable_fk import fk_xarm6_torch
 from data.generate_sdf import combine_gripper_meshes
 from robot_sdf import RobotSDF
+from training.network import SDFNetwork
 
 class SDFVisualizer:
     def __init__(self, device='cuda'):
         self.device = device
         self.robot_sdf = RobotSDF(device)
+        
+        # Load base SDF model separately
+        model_dir = Path(__file__).parent.parent / "trained_models"
+        base_checkpoint = torch.load(model_dir / "link_0" / "best_model.pt")
+        self.base_sdf_model = SDFNetwork().to(device)
+        self.base_sdf_model.load_state_dict(base_checkpoint['model_state_dict'])
+        self.base_sdf_model.eval()
+        
+        # Load base scaling parameters
+        data_dir = Path(__file__).parent.parent / "data" / "sdf_data"
+        base_data = np.load(data_dir / "link_0_link0.npz")
+        self.base_offset = torch.from_numpy(base_data['original_center']).float().to(device)
+        self.base_scale = torch.tensor(base_data['original_scale'], dtype=torch.float32).to(device)
         
         # Load meshes for comparison
         project_root = Path(__file__).parent.parent
@@ -70,10 +84,17 @@ class SDFVisualizer:
         
         return vertices, triangles
     
-    def visualize_sdf(self, joint_angles, show_meshes=True, resolution=64):
+    def visualize_sdf(self, joint_angles, show_meshes=False, resolution=64):
         """Visualize SDF zero-level surface and optionally show meshes"""
-        # Create scene
         scene = trimesh.Scene()
+        
+        # First visualize base SDF (static)
+        vertices, triangles = self.extract_level_surface_for_link(self.base_sdf_model, resolution)
+        vertices = vertices * self.base_scale.cpu().numpy()
+        vertices = vertices + self.base_offset.cpu().numpy()
+        base_mesh = trimesh.Trimesh(vertices=vertices, faces=triangles)
+        base_mesh.visual.face_colors = self.sdf_colors[0]  # Base color
+        scene.add_geometry(base_mesh)
         
         # Get transforms using FK
         q = joint_angles.cpu().reshape(-1)
@@ -81,7 +102,6 @@ class SDFVisualizer:
             raise ValueError(f"Expected 6 joint angles, got {len(q)}")
         transforms = fk_xarm6_torch(q, with_gripper=True)
         transforms_dict = {
-            'base': np.eye(4),
             'link1': transforms[0].cpu().numpy(),
             'link2': transforms[1].cpu().numpy(),
             'link3': transforms[2].cpu().numpy(),
@@ -91,30 +111,22 @@ class SDFVisualizer:
             'link7': transforms[5].cpu().numpy()   # gripper base frame
         }
         
-        # Extract and transform level surface for each link
+        # Extract and transform level surface for each movable link
         for i, model in enumerate(self.robot_sdf.models):
-            # Extract surface in local frame
             vertices, triangles = self.extract_level_surface_for_link(model, resolution)
-            
-            # Scale back to world coordinates
             vertices = vertices * self.robot_sdf.scales[i].cpu().numpy()
             vertices = vertices + self.robot_sdf.offsets[i].cpu().numpy()
             
-            # Create mesh
             link_mesh = trimesh.Trimesh(vertices=vertices, faces=triangles)
-            
-            # Apply transform
-            link_name = f'link{i}'
+            link_name = f'link{i+1}'
             if link_name in transforms_dict:
                 link_mesh.apply_transform(transforms_dict[link_name])
-            
-            # Set color and add to scene
-            link_mesh.visual.face_colors = self.sdf_colors[i]
+            link_mesh.visual.face_colors = self.sdf_colors[i+1]
             scene.add_geometry(link_mesh)
         
         if show_meshes:
-            # Add original meshes
-            for i, mesh in enumerate(self.meshes):
+            # Add original meshes - skip base mesh (index 0)
+            for i, mesh in enumerate(self.meshes[1:], start=1):  # Start from index 1
                 link_name = Path(mesh.metadata['file_name']).stem.split('_')[0]
                 if link_name in transforms_dict:
                     mesh_copy = mesh.copy()
