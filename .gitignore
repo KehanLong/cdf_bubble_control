@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 *.pyo
+xarm_sdf/data/cdf_data/contact_db.npy
