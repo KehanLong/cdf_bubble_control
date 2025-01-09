@@ -315,7 +315,7 @@ class XArmSDFVisualizer:
         view_matrix = p.computeViewMatrixFromYawPitchRoll(
             cameraTargetPosition=[0.0, 0.0, 1.5],
             distance=2.5,
-            yaw=-(step / time_steps) * 60,  # Rotating camera
+            yaw=0,  # Rotating camera, -(step / time_steps) * 60 for rotate to left
             pitch=0,
             roll=0,
             upAxisIndex=2
@@ -338,7 +338,7 @@ class XArmSDFVisualizer:
         
         return np.array(rgb)[:, :, :3]
 
-    def run_demo(self, duration=5.0, fps=20):
+    def run_demo(self, duration=5.0, fps=20, execute_trajectory=True):
         """Run demo with selected planner and record video"""
         print(f"Starting {self.planner_type.upper()} demo...")
         
@@ -346,6 +346,7 @@ class XArmSDFVisualizer:
         goal_distances = []
         sdf_distances = []
         frames = []
+        trajectory = None
         
         # Setup parameters
         width = 1920
@@ -359,7 +360,7 @@ class XArmSDFVisualizer:
             goal_config = self._find_goal_configuration(self.goal - self.base_pos)
             if goal_config is None:
                 print("Failed to find valid goal configuration!")
-                return goal_distances, sdf_distances
+                return None if not execute_trajectory else (goal_distances, sdf_distances)
             
             current_state = self.get_current_joint_states()
             trajectory = self.rrt_planner.plan(
@@ -369,8 +370,11 @@ class XArmSDFVisualizer:
             )
             if not trajectory:
                 print(f"{self.planner_type.upper()} planning failed!")
-                return goal_distances, sdf_distances
+                return None if not execute_trajectory else (goal_distances, sdf_distances)
             print(f"{self.planner_type.upper()} path found with {len(trajectory)} waypoints")
+            
+            if not execute_trajectory:
+                return trajectory
             
             # Execute trajectory
             traj_idx = 0
@@ -417,29 +421,25 @@ class XArmSDFVisualizer:
             goal_config = self._find_goal_configuration(self.goal - self.base_pos)
             if goal_config is None:
                 print("Failed to find valid goal configuration!")
-                return goal_distances, sdf_distances
+                return None if not execute_trajectory else (goal_distances, sdf_distances)
             
-            # Keep points on GPU but ensure correct dimensions
-            obstacle_points = self.points_robot
-            if obstacle_points.dim() == 2:
-                obstacle_points = obstacle_points.unsqueeze(0)  # Add batch dimension if needed
-            
-            # Plan path using bubble planner with obstacle points
+            # Plan path using bubble planner
             try:
                 trajectory = self.bubble_planner.plan(
                     start_config=current_state,
                     goal_config=goal_config,
-                    obstacle_points=obstacle_points
+                    obstacle_points=self.points_robot
                 )
-                print('goal config', goal_config)
-                print('planned last config', trajectory[-1])
                 
                 if trajectory is None:
                     print("Bubble planning failed!")
-                    return goal_distances, sdf_distances
+                    return None if not execute_trajectory else (goal_distances, sdf_distances)
                 
                 print(f"Bubble planner found path with {len(trajectory)} waypoints")
                 
+                if not execute_trajectory:
+                    return trajectory
+                    
                 # Execute trajectory
                 traj_idx = 0
                 print(f"Starting execution of {len(trajectory)} waypoints...")
@@ -490,11 +490,12 @@ class XArmSDFVisualizer:
                     
             except Exception as e:
                 print(f"Error during bubble planning execution: {str(e)}")
-                return goal_distances, sdf_distances
+                return None if not execute_trajectory else (goal_distances, sdf_distances)
             
         else:  # MPPI
             current_state = self.get_current_joint_states()
             U = torch.zeros((self.initial_horizon, 6), device=self.device)
+            trajectory = []  # Store MPPI trajectory
             
             while step < time_steps:
                 # MPPI control step
@@ -506,7 +507,11 @@ class XArmSDFVisualizer:
                     obstaclesX=self.points_robot,
                     safety_margin=0.01
                 )
+                trajectory.append(current_state.cpu().numpy())
                 
+                if not execute_trajectory:
+                    continue
+                    
                 # Update robot state
                 next_state = current_state + action.squeeze() * dt
                 self.set_robot_configuration(next_state)
@@ -541,6 +546,9 @@ class XArmSDFVisualizer:
                 step += 1
                 torch.cuda.empty_cache()
             
+            if not execute_trajectory:
+                return trajectory
+        
         # Save video and plot results
         if frames:
             print("Saving video...")
@@ -553,7 +561,7 @@ class XArmSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage
-    goal_pos = torch.tensor([0.1, 0.5, 0.6], device='cuda')
+    goal_pos = torch.tensor([0.7, 0.2, 0.6], device='cuda')      # p[0.5, 0.5, 0.6] for back of the shelf, 
     
     # Select planner type ('mppi', 'rrt', 'rrt_connect', or 'bubble')
     planner_type = 'bubble_cdf'

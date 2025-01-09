@@ -5,6 +5,7 @@ import sys
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import time
+from torch.quasirandom import SobolEngine
 
 # Add parent directory to path to import xarm modules
 CUR_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -41,12 +42,15 @@ class XArmCDFDataGeneratorNew:
 
     def generate_contact_database(self, n_samples: int = 10000) -> Dict[Tuple[float, float, float], List[np.ndarray]]:
         """
-        Generate database of contact configurations for each workspace point
+        Generate database of contact configurations using Sobol sequences
         """
         print("\n=== Generating Contact Configuration Database ===")
-        print(f"Sampling {n_samples} configurations...")
+        print(f"Sampling {n_samples} configurations using Sobol sequence...")
         
-        # 1. Create grid of points in workspace
+        # Initialize Sobol sequence generator
+        sobol_engine = SobolEngine(dimension=6, scramble=True)
+        
+        # Create grid of points in workspace
         x = torch.linspace(self.workspace[0][0], self.workspace[1][0], self.n_grid, device=self.device)
         y = torch.linspace(self.workspace[0][1], self.workspace[1][1], self.n_grid, device=self.device)
         z = torch.linspace(self.workspace[0][2], self.workspace[1][2], self.n_grid, device=self.device)
@@ -56,16 +60,17 @@ class XArmCDFDataGeneratorNew:
         # Initialize contact database
         contact_db = defaultdict(list)
         start_time = time.time()
-        
-        # 2. Sample configurations and check contacts
         batch_size = 5  # Process configurations in batches
+        total_contacts = 0
+        
         for i in range(0, n_samples, batch_size):
             current_batch = min(batch_size, n_samples - i)
             
-            # Sample random configurations
-            q_batch = torch.rand(current_batch, 6, device=self.device) * (self.q_max - self.q_min) + self.q_min
+            # Generate quasi-random configurations
+            sobol_samples = sobol_engine.draw(current_batch).to(self.device)
+            q_batch = sobol_samples * (self.q_max - self.q_min) + self.q_min
             
-            # Compute SDF values for all grid points with these configurations
+            # Compute SDF values
             with torch.no_grad():
                 points_expanded = grid_points.unsqueeze(0).expand(current_batch, -1, -1)
                 sdf_values = self.robot_sdf.query_sdf(
@@ -74,12 +79,12 @@ class XArmCDFDataGeneratorNew:
                     return_gradients=False
                 )
             
-            # Find contact points (where SDF ≈ 0)
             contact_mask = torch.abs(sdf_values) < self.contact_threshold
             
-            # Store contact configurations for each point
+            # Store contact configurations
             for b in range(current_batch):
                 point_indices = torch.where(contact_mask[b])[0]
+                total_contacts += len(point_indices)
                 for idx in point_indices:
                     point_tuple = tuple(grid_points[idx].cpu().numpy())
                     contact_db[point_tuple].append(q_batch[b].cpu().numpy())
@@ -91,9 +96,10 @@ class XArmCDFDataGeneratorNew:
                 print(f"\nProgress: {progress:.1f}%")
                 print(f"Configurations processed: {i + current_batch}/{n_samples}")
                 print(f"Points with contacts: {len(contact_db)}")
+                print(f"Total contact configs found: {total_contacts}")
                 print(f"Time elapsed: {elapsed_time/60:.1f} minutes")
         
-        # 3. Filter points with insufficient contact configurations
+        # Filter points with insufficient contacts
         filtered_db = {
             point: configs 
             for point, configs in contact_db.items() 

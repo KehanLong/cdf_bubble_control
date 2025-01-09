@@ -117,7 +117,7 @@ class RobotSDF:
         
         if return_gradients:
             if gradient_method == 'analytic':
-                print("\nComputing analytic gradients...")
+                #print("\nComputing analytic gradients...")
                 analytic_grads = torch.zeros((B, N, 6), device=self.device)
                 for b in range(B):
                     for i in range(N):
@@ -131,13 +131,13 @@ class RobotSDF:
                         except Exception as e:
                             print(f"Warning: Gradient computation failed for batch {b}, point {i}: {e}")
                 
-                print(f"Analytic gradients shape: {analytic_grads.shape}")
-                print(f"Analytic gradients mean: {analytic_grads.mean():.6f}")
-                print(f"Analytic gradients std: {analytic_grads.std():.6f}")
+                # print(f"Analytic gradients shape: {analytic_grads.shape}")
+                # print(f"Analytic gradients mean: {analytic_grads.mean():.6f}")
+                # print(f"Analytic gradients std: {analytic_grads.std():.6f}")
                 result.append(analytic_grads)
                 
             elif gradient_method == 'finite_diff':
-                print("\nComputing finite difference gradients...")
+                #print("\nComputing finite difference gradients...")
                 delta = 0.001
                 finite_diff_grads = []
                 
@@ -150,9 +150,9 @@ class RobotSDF:
                     finite_diff_grads.append(grad)
                 
                 finite_diff_grads = torch.stack(finite_diff_grads, dim=2)  # [B, N, 6]
-                print(f"Finite diff gradients shape: {finite_diff_grads.shape}")
-                print(f"Finite diff gradients mean: {finite_diff_grads.mean():.6f}")
-                print(f"Finite diff gradients std: {finite_diff_grads.std():.6f}")
+                # print(f"Finite diff gradients shape: {finite_diff_grads.shape}")
+                # print(f"Finite diff gradients mean: {finite_diff_grads.mean():.6f}")
+                # print(f"Finite diff gradients std: {finite_diff_grads.std():.6f}")
                 result.append(finite_diff_grads)
                 
             elif gradient_method == 'both':

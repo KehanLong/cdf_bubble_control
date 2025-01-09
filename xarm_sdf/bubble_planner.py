@@ -58,7 +58,7 @@ class BubblePlanner:
         
         min_cdf = cdf_values.min().detach().cpu().numpy()
 
-        min_cdf = min(min_cdf * 5., self.max_cdf)
+        min_cdf = min(min_cdf * 5, self.max_cdf)
 
         #print(f"Min CDF: {min_cdf}")
         
