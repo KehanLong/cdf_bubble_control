@@ -2,7 +2,7 @@ import torch
 import os
 import numpy as np
 import sys
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import trimesh
 
 # Add parent directory to path to import xarm modules
@@ -31,13 +31,11 @@ class XArmCDFDataGenerator:
         self.device = device
         
         # Data generation parameters
-        self.workspace = [[-0.6, -0.6, 0.0],  # min x,y,z
-                         [0.6, 0.6, 1.0]]      # max x,y,z
-        self.n_discrete = 20       # Points per dimension for workspace discretization
-        self.batchsize = 1000      # Batch size for configuration sampling
-        self.epsilon = 1e-3         # Distance threshold for valid configurations
-        
-        self.visualizer = SDFVisualizer(device)
+        self.workspace = [[-0.5, -0.5, 0.0],  # min x,y,z
+                         [0.5, 0.5, 1.0]]      # max x,y,z
+        self.n_discrete = 40      # Points per dimension for workspace discretization
+        self.batchsize = 30000    # Batch size for configuration sampling
+        self.epsilon = 5e-3       # Distance threshold to filter data
         
         # Update save directory
         self.save_dir = os.path.join(CUR_DIR, '..', 'data', 'cdf_data')
@@ -61,19 +59,25 @@ class XArmCDFDataGenerator:
         """
         points = x.unsqueeze(0).expand(len(q), -1, -1)  # (Nq, Nx, 3)
         
-        # Ensure we're using torch operations that maintain gradients
-        sdf_values = self.robot_sdf.query_sdf(
+        # Get both SDF values and link indices from query_sdf_batch
+        sdf_values, link_indices = self.robot_sdf.query_sdf_batch(
             points=points,
             joint_angles=q,
+            return_link_id=True,  # Make sure to request link IDs
             return_gradients=False
         )
         
-        # Use torch.min instead of accessing values directly to maintain gradient
-        d, min_indices = torch.min(sdf_values, dim=1)
+        # Debug prints
+        # if return_index:
+        #     print("\nSDF Debug:")
+        #     print(f"SDF values shape: {sdf_values.shape}")
+        #     print(f"Link indices shape: {link_indices.shape}")
+        #     print(f"Unique link indices: {torch.unique(link_indices).cpu().numpy()}")
+        #     print(f"Link indices distribution: {torch.bincount(link_indices.flatten()).cpu().numpy()}")
         
         if return_index:
-            return d, min_indices
-        return d, None
+            return sdf_values, link_indices
+        return sdf_values, None
 
     def wrap_angles(self, q: torch.Tensor) -> torch.Tensor:
         """
@@ -81,37 +85,39 @@ class XArmCDFDataGenerator:
         """
         return torch.atan2(torch.sin(q), torch.cos(q))
 
-    def find_valid_configurations(self, 
-                                x: torch.Tensor,
-                                initial_q: Optional[torch.Tensor] = None,
-                                batchsize: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _cost_function(self, q: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """
-        Find valid configurations that place the robot at the given point using batch optimization
+        Cost function for optimization
+        Args:
+            q: Joint configurations (N, 6)
+            x: Target point (3,)
+        Returns:
+            cost: Scalar cost value
         """
-        if batchsize is None:
-            batchsize = self.batchsize  # Use class default (10000)
+        q_wrapped = self.wrap_angles(q)
+        q_reshaped = q_wrapped.reshape(-1, 6)
+        d, _ = self.compute_sdf(x.unsqueeze(0), q_reshaped)
+        cost = (d**2).sum()
+        return cost
+
+    def find_valid_configurations(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Find valid configurations using single large batch optimization
+        """
+        t0 = time.time()
         
-        # Initialize a large batch of random configurations
-        q = torch.rand(batchsize, 6, device=self.device) * (self.q_max - self.q_min) + self.q_min
+        # Initialize random configurations
+        q = torch.rand(self.batchsize, 6, device=self.device) * (self.q_max - self.q_min) + self.q_min
         q = q.detach().requires_grad_(True)
         
-        def cost_function(q: torch.Tensor) -> torch.Tensor:
-            q_wrapped = self.wrap_angles(q)
-            q_reshaped = q_wrapped.reshape(-1, 6)
-            d, _ = self.compute_sdf(x.unsqueeze(0), q_reshaped)
-            cost = (d**2).sum()
-            return cost
-
         try:
             result = minimize(
-                cost_function,
+                lambda q: self._cost_function(q, x),
                 q,
-                method='l-bfgs',
-                options={
-                    'max_iter': 50,
-                    'line_search': 'strong-wolfe',
-                    'disp': False
-                }
+                method='l-bfgs', 
+                options=dict(line_search='strong-wolfe'),
+                max_iter=50,
+                disp=0
             )
             
             # Get final distances and link indices
@@ -120,14 +126,19 @@ class XArmCDFDataGenerator:
                 distances, link_indices = self.compute_sdf(x.unsqueeze(0), q_result, return_index=True)
                 
                 # Filter valid configurations
-                valid_mask = (torch.abs(distances) < self.epsilon) & \
-                            ((q_result > self.q_min) & (q_result < self.q_max)).all(dim=1)
+                mask = torch.abs(distances) < self.epsilon
+                boundary_mask = ((q_result > self.q_min) & (q_result < self.q_max)).all(dim=1)
+                final_mask = mask.squeeze() & boundary_mask  # Add squeeze() to make mask 1D
                 
-                valid_q = q_result[valid_mask]
-                valid_indices = link_indices[valid_mask]
+                valid_q = q_result[final_mask]
+                valid_indices = link_indices[final_mask]
                 
-                print(f'Found {len(valid_q)} valid configurations out of {batchsize} attempts '
-                      f'for point {x.cpu().numpy()}')
+                # Debug prints after filtering
+                if len(valid_indices) > 0:
+                    print(f"Unique valid link indices: {torch.unique(valid_indices).cpu().numpy()}")
+                    print(f"Valid link indices distribution: {torch.bincount(valid_indices.flatten()).cpu().numpy()}")
+                
+                print(f'number of q_valid: \t{len(valid_q)} \t time cost:{time.time()-t0:.2f}')
                 
                 return valid_q, valid_indices
                 
@@ -135,99 +146,69 @@ class XArmCDFDataGenerator:
             print(f"Optimization failed: {str(e)}")
             return torch.zeros(0, 6, device=self.device), torch.zeros(0, device=self.device)
 
+    def save_contact_database(self, data: Dict, save_path: str):
+        """Save contact database in memory-efficient compressed format"""
+        compressed_db = {
+            'points': np.array([data[i]['x'] for i in data.keys()]),  # [N, 3]
+            'contact_configs': [data[i]['q'] for i in data.keys()],     # List of [M_i, 6] arrays
+            'link_indices': [data[i]['idx'] for i in data.keys()]      # List of [M_i] arrays
+        }
+        np.save(save_path, compressed_db)
+        print(f"\nSaved contact database to: {save_path}")
+        print(f"Number of points: {len(compressed_db['points'])}")
+        print(f"Average configs per point: {np.mean([len(configs) for configs in compressed_db['contact_configs']]):.1f}")
+
     def generate_dataset(self, save_path: str = None) -> Dict:
         """
         Generate CDF training dataset
         """
-        print("\n=== Starting Dataset Generation ===")
+        print("\n=== Starting Contact Database Generation ===")
         
-        # 1. Create grid of points in workspace
+        # Create grid of points in workspace
         x = torch.linspace(self.workspace[0][0], self.workspace[1][0], self.n_discrete, device=self.device)
         y = torch.linspace(self.workspace[0][1], self.workspace[1][1], self.n_discrete, device=self.device)
         z = torch.linspace(self.workspace[0][2], self.workspace[1][2], self.n_discrete, device=self.device)
-        
         X, Y, Z = torch.meshgrid(x, y, z, indexing='ij')
         points = torch.stack([X, Y, Z], dim=-1).reshape(-1, 3)
         
         print(f"\nTotal grid points to process: {len(points)} ({self.n_discrete}×{self.n_discrete}×{self.n_discrete})")
         
-        # 2. Find zero configurations for each point
-        zero_configs = {}
-        total_zero_configs = 0
+        # Process each point
+        data = {}
         start_time = time.time()
         
         for i, point in enumerate(points):
-            valid_q, _ = self.find_valid_configurations(point)
-            if len(valid_q) > 0:
-                zero_configs[i] = valid_q
-                total_zero_configs += len(valid_q)
-                
-            if (i + 1) % 1 == 0 or i == len(points) - 1:
-                elapsed_time = time.time() - start_time
-                avg_time_per_point = elapsed_time / (i + 1)
-                remaining_points = len(points) - (i + 1)
-                estimated_remaining_time = remaining_points * avg_time_per_point
-                
-                print(f'\nProgress: {i+1}/{len(points)} points ({(i+1)/len(points)*100:.1f}%)')
-                print(f'Zero configs found so far: {total_zero_configs}')
-                print(f'Average configs per point: {total_zero_configs/(i+1):.2f}')
-                print(f'Time elapsed: {elapsed_time/60:.1f} minutes')
-                print(f'Estimated remaining time: {estimated_remaining_time/60:.1f} minutes')
-                print(f'Points with valid configs: {len(zero_configs)}/{i+1}')
-
-        print("\n=== Starting Training Pair Generation ===")
-        
-        # 3. Generate random configurations for training
-        n_samples = 200
-        random_configs = torch.rand(n_samples, 6, device=self.device) * (self.q_max - self.q_min) + self.q_min
-        print(f"\nGenerating {n_samples} random configurations")
-
-        # 4. Generate training pairs
-        training_data = {
-            'joint_angles': [],
-            'points': [],
-            'cdf_values': []
-        }
-        
-        total_pairs = 0
-        pair_start_time = time.time()
-
-        for i, q in enumerate(random_configs):
-            for j, point in enumerate(points):
-                if j in zero_configs:
-                    # Compute distance to all zero configurations for this point
-                    zero_q = zero_configs[j]
-                    distances = torch.norm(zero_q - q.unsqueeze(0), dim=1)
-                    min_distance = torch.min(distances)
-                    
-                    training_data['joint_angles'].append(q.cpu().numpy())
-                    training_data['points'].append(point.cpu().numpy())
-                    training_data['cdf_values'].append(min_distance.cpu().numpy())
-                    total_pairs += 1
+            print(f"\nProcessing point {i+1}/{len(points)}: {point.cpu().numpy()}")
             
-            if (i + 1) % 10 == 0 or i == len(random_configs) - 1:
-                elapsed = time.time() - pair_start_time
-                print(f'\nProcessed {i+1}/{len(random_configs)} configurations')
-                print(f'Training pairs generated: {total_pairs}')
-                print(f'Average pairs per config: {total_pairs/(i+1):.1f}')
-                print(f'Time elapsed: {elapsed/60:.1f} minutes')
+            q, idx = self.find_valid_configurations(point)
+            
+            data[i] = {
+                'x': point.cpu().numpy(),
+                'q': q.cpu().numpy(),
+                'idx': idx.cpu().numpy(),
+            }
+            
+            # Print progress
+            elapsed_time = time.time() - start_time
+            avg_time_per_point = elapsed_time / (i + 1)
+            remaining_points = len(points) - (i + 1)
+            estimated_remaining_time = remaining_points * avg_time_per_point
+            
+            print(f'Progress: {i+1}/{len(points)} points ({(i+1)/len(points)*100:.1f}%)')
+            print(f'Time elapsed: {elapsed_time/60:.1f} minutes')
+            print(f'Estimated remaining time: {estimated_remaining_time/60:.1f} minutes')
 
-        # Convert to numpy arrays
-        print("\n=== Finalizing Dataset ===")
-        for key in training_data:
-            training_data[key] = np.array(training_data[key])
-        
-        print(f"\nFinal dataset statistics:")
-        print(f"Total training pairs: {len(training_data['joint_angles'])}")
-        print(f"Total points with valid configs: {len(zero_configs)}")
-        print(f"Total zero configurations: {total_zero_configs}")
-        print(f"Average zero configs per valid point: {total_zero_configs/len(zero_configs):.2f}")
+            # Save periodically
+            # if save_path and i % 100 == 0 and i > 0:
+            #     temp_save_path = save_path.replace('.npy', f'_checkpoint_{i}.npy')
+            #     self.save_contact_database(data, temp_save_path)
+            #     print(f"\nCheckpoint saved to: {temp_save_path}")
 
+        # Final save
         if save_path:
-            np.save(save_path, training_data)
-            print(f"\nDataset saved to: {save_path}")
-            
-        return training_data
+            self.save_contact_database(data, save_path)
+        
+        return data
 
     def visualize_test_points(self, n_points: int = 1):
         """
@@ -285,8 +266,5 @@ class XArmCDFDataGenerator:
 if __name__ == "__main__":
     generator = XArmCDFDataGenerator()
     
-    # Test visualization with a few points
-    # generator.visualize_test_points(n_points=3)
-    
-    # Generate and save full dataset
-    data = generator.generate_dataset(os.path.join(generator.save_dir, 'xarm_cdf_data.npy')) 
+    # Generate and save contact database
+    data = generator.generate_dataset(os.path.join(generator.save_dir, 'bfgs_contact_db.npy')) 

@@ -50,7 +50,7 @@ class ClfCbfQpController:
         ]
 
         # Minimize control effort and CLF slack
-        obj = cp.Minimize(self.p1 * cp.norm(u) ** 2 + self.p2 * cp.norm(delta) ** 2)
+        obj = cp.Minimize(self.p2 * cp.norm(delta) ** 2)
         prob = cp.Problem(obj, constraints)
 
         try:

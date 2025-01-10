@@ -8,11 +8,11 @@ import os
 from xarm_sim_env import XArmEnvironment
 from robot_sdf import RobotSDF
 from robot_cdf import RobotCDF
-from mppi_functional import setup_mppi_controller
+from planner.mppi_functional import setup_mppi_controller
 from models.xarm_model import XArmFK
-from rrt_functional import RRTPlanner, RRTConnectPlanner
+from planner.rrt_functional import RRTPlanner, RRTConnectPlanner
 from typing import Optional
-from bubble_planner import BubblePlanner
+from planner.bubble_planner import BubblePlanner
 
 def plot_distances(goal_distances, estimated_obstacle_distances, obst_radius, dt, save_path='distances_plot.png'):
     time_steps = np.arange(len(goal_distances)) * dt
@@ -228,7 +228,7 @@ class XArmSDFVisualizer:
         upper_limits = self.robot_fk.joint_limits[:, 1].cpu().numpy().astype(np.float32)
         
         # Sample configurations in batches for efficiency
-        batch_size = 1000
+        batch_size = 10000
         n_batches = int(n_samples // batch_size)
         
         best_config = None
@@ -425,11 +425,13 @@ class XArmSDFVisualizer:
             
             # Plan path using bubble planner
             try:
-                trajectory = self.bubble_planner.plan(
+                trajectory_whole = self.bubble_planner.plan(
                     start_config=current_state,
                     goal_config=goal_config,
                     obstacle_points=self.points_robot
                 )
+
+                trajectory = trajectory_whole['waypoints']
                 
                 if trajectory is None:
                     print("Bubble planning failed!")
@@ -438,7 +440,7 @@ class XArmSDFVisualizer:
                 print(f"Bubble planner found path with {len(trajectory)} waypoints")
                 
                 if not execute_trajectory:
-                    return trajectory
+                    return trajectory_whole
                     
                 # Execute trajectory
                 traj_idx = 0

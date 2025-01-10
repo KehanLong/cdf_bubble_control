@@ -8,7 +8,7 @@ sys.path.append(str(project_root))
 import torch
 import numpy as np
 from training.network import SDFNetwork
-from models.xarm6_differentiable_fk import fk_xarm6_torch
+from models.xarm6_differentiable_fk import fk_xarm6_torch, fk_xarm6_torch_batch
 
 class RobotSDF:
     def __init__(self, device='cuda', with_gripper=True):
@@ -52,6 +52,7 @@ class RobotSDF:
             models.append(model)
         return models
     
+
     def query_sdf(self, points, joint_angles, return_link_id=False, return_gradients=False, gradient_method='analytic'):
         """
         Query SDF for points given joint angles
@@ -172,29 +173,125 @@ class RobotSDF:
         
         return tuple(result) if len(result) > 1 else result[0]
     
-    def test_differentiability(self):
-        # Create test inputs
-        points = torch.randn(1, 3, 3, device=self.device)  # [batch, num_points, 3]
-        joint_angles = torch.zeros(1, 6, device=self.device, requires_grad=True)
+    def query_sdf_batch(self, points, joint_angles, return_link_id=False, return_gradients=False, gradient_method='analytic'):
+        """
+        Optimized SDF query implementation
+        """
+        points = points.to(dtype=torch.float32)
+        joint_angles = joint_angles.to(dtype=torch.float32)
         
-        # Forward pass
-        sdf = self.query_sdf(points, joint_angles)
+        B = joint_angles.shape[0]
+        N = points.shape[1] if points.dim() > 2 else 1
         
-        # Check if gradients flow
-        try:
-            loss = sdf.sum()
-            loss.backward()
-            print("Gradient computation successful!")
-            print(f"Joint angles gradient: {joint_angles.grad}")
-        except Exception as e:
-            print(f"Gradient computation failed: {str(e)}")
+        if return_gradients and gradient_method == 'analytic':
+            joint_angles.requires_grad_(True)  # Ensure gradients are enabled
+        
+        # Vectorized FK computation
+        transforms = fk_xarm6_torch_batch(joint_angles, with_gripper=self.with_gripper)
+        
+        if self.with_gripper:
+            transforms = torch.cat([transforms[:, :-1], transforms[:, -2:-1]], dim=1)
+        
+        # Vectorized point transformation
+        points_expanded = points.unsqueeze(1).expand(-1, self.num_links, -1, -1)
+        points_homogeneous = torch.cat([
+            points_expanded, 
+            torch.ones_like(points_expanded[...,:1])
+        ], dim=-1)
+        
+        inv_transforms = torch.linalg.inv(transforms)
+        local_points = torch.matmul(
+            inv_transforms.view(B * self.num_links, 4, 4),
+            points_homogeneous.view(B * self.num_links, N, 4).transpose(1, 2)
+        ).transpose(1, 2).view(B, self.num_links, N, 4)[..., :3]
+        
+        scaled_points = ((local_points - self.offsets.view(1, self.num_links, 1, 3)) / 
+                        self.scales.view(1, self.num_links, 1, 1))
+        
+        # Batch SDF computation
+        sdf_values = torch.zeros((B, self.num_links, N), device=self.device)
+        batch_size = 10000
+        
+        for i, model in enumerate(self.models):
+            points_i = scaled_points[:, i].reshape(-1, 3)
+            
+            if len(points_i) > batch_size:
+                sdf_i = []
+                for j in range(0, len(points_i), batch_size):
+                    batch = points_i[j:j + batch_size]
+                    sdf_batch = model(batch)
+                    sdf_i.append(sdf_batch)
+                sdf_i = torch.cat(sdf_i)
+            else:
+                sdf_i = model(points_i)
+            
+            sdf_values[:, i] = sdf_i.reshape(B, N) * self.scales[i]
+        
+        # Get minimum distance and corresponding link
+        min_sdf, link_ids = torch.min(sdf_values, dim=1)
+        
+        # Map gripper indices (6) to Link 6 indices (5)
+        if return_link_id:
+            link_ids = torch.where(link_ids == 6, torch.tensor(5, device=link_ids.device), link_ids)
+        
+        result = [min_sdf]
+        if return_link_id:
+            result.append(link_ids)
+        
+        if return_gradients:
+            if gradient_method == 'analytic':
+                # Vectorized gradient computation
+                analytic_grads = torch.zeros((B, N, 6), device=self.device)
+                
+                # Enable gradients for joint angles if not already enabled
+                if not joint_angles.requires_grad:
+                    joint_angles.requires_grad_(True)
+                
+                # Compute gradients for each point individually
+                for b in range(B):
+                    for n in range(N):
+                        # Create computation graph for this specific point
+                        point_sdf = min_sdf[b, n]
+                        
+                        try:
+                            grad = torch.autograd.grad(
+                                point_sdf, 
+                                joint_angles,
+                                retain_graph=True,
+                                create_graph=True,  # Enable higher-order gradients if needed
+                                allow_unused=True
+                            )[0]
+                            
+                            if grad is not None:
+                                analytic_grads[b, n] = grad[b]
+                        except Exception as e:
+                            print(f"Warning: Gradient computation failed for batch {b}, point {n}: {e}")
+                            # Keep zero gradient for failed computations
+                
+                result.append(analytic_grads)
+                
+            elif gradient_method == 'finite_diff':
+                # Vectorized finite differences
+                delta = 0.001
+                finite_diff_grads = torch.zeros((B, N, 6), device=self.device)
+                
+                for i in range(6):
+                    perturbed_angles = joint_angles.clone()
+                    perturbed_angles[:, i] += delta
+                    perturbed_sdf = self.query_sdf(points, perturbed_angles)[0]
+                    finite_diff_grads[..., i] = (perturbed_sdf - min_sdf) / delta
+                
+                result.append(finite_diff_grads)
+        
+        return tuple(result) if len(result) > 1 else result[0]
+    
 
 if __name__ == "__main__":
     device = 'cuda'
     robot_sdf = RobotSDF(device)
     
     # Fixed joint configuration
-    joint_angles = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], device=device)  # [1, 6]
+    joint_angles = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], device=device)
     print(f"\nTesting with joint angles: {joint_angles.cpu().numpy()[0]}")
     
     # Test points (in world frame)
@@ -202,7 +299,7 @@ if __name__ == "__main__":
         # Point near base
         [0.0, 0.5, 0.1],
         # Point near middle (around link 2-3)
-        [0.3, 0.2, 0.3],
+        [0.3, 0.2, 0.0],
         # Point near end-effector
         [0.3, 0.3, 0.5]
     ], device=device).unsqueeze(0)  # [1, 3, 3]
@@ -211,11 +308,27 @@ if __name__ == "__main__":
     for i, p in enumerate(test_points[0]):
         print(f"Point {i}: {p.cpu().numpy()}")
     
-    # Query SDF and gradients for these specific points
-    sdf, link_ids, grads = robot_sdf.query_sdf(test_points, joint_angles, 
-                                              return_link_id=True, 
-                                              return_gradients=True,
-                                              gradient_method='both')
+    # Query SDF with both gradient methods separately
+    print("\nComputing analytic gradients...")
+    results_analytic = robot_sdf.query_sdf_batch(
+        test_points, 
+        joint_angles, 
+        return_link_id=True, 
+        return_gradients=True,
+        gradient_method='analytic'
+    )
+    
+    print("\nComputing finite difference gradients...")
+    results_finite = robot_sdf.query_sdf_batch(
+        test_points, 
+        joint_angles, 
+        return_link_id=True, 
+        return_gradients=True,
+        gradient_method='finite_diff'
+    )
+    
+    sdf, link_ids, analytic_grads = results_analytic
+    _, _, finite_grads = results_finite
     
     # Print results for each point
     print("\nResults:")
@@ -223,13 +336,87 @@ if __name__ == "__main__":
         print(f"\nPoint {i}:")
         print(f"SDF value: {sdf[0,i].item():.6f}")
         print(f"Closest link: {link_ids[0,i].item()}")
-        print("Gradients:")
-        print("  Analytic:", grads['analytic'][0,i].detach().cpu().numpy())
-        print("  Finite diff:", grads['finite_diff'][0,i].detach().cpu().numpy())
-        print(f"  Max difference: {(grads['analytic'][0,i] - grads['finite_diff'][0,i]).abs().max().item():.6f}")
+        print(f"Analytic gradients: {analytic_grads[0,i].detach().cpu().numpy()}")
+        print(f"Finite diff gradients: {finite_grads[0,i].detach().cpu().numpy()}")
+        print(f"Gradient difference: {(analytic_grads[0,i] - finite_grads[0,i]).abs().max().item():.6f}")
     
-    # Add this to your test code
-    robot_sdf = RobotSDF(device='cuda')
-    robot_sdf.test_differentiability()
+    # Test differentiability
+
+    # Speed comparison test
+    print("\n=== Speed Comparison Test ===")
+    device = 'cuda'
+    robot_sdf = RobotSDF(device)
+    
+    # Test different combinations of N configs and M points
+    test_cases = [
+        (1, 1000),    # 1 config, 1000 points
+        (1, 10000),   # 1 config, 10000 points
+        (100, 1000),  # 100 configs, 1000 points
+        (1000, 100),  # 1000 configs, 100 points
+        (10000, 1)
+    ]
+
+    import time
+
+    for num_configs, num_points in test_cases:
+        print(f"\nTesting with {num_configs} configs and {num_points} points:")
+        
+        # Generate random configurations and points
+        configs = torch.rand((num_configs, 6), device=device) * 2 * torch.pi - torch.pi
+        points = torch.rand((num_configs, num_points, 3), device=device) * 2 - 1  # Range [-1, 1]
+
+        # Test query_sdf
+        torch.cuda.synchronize()
+        start = time.time()
+        regular_result = robot_sdf.query_sdf(points, configs)
+        torch.cuda.synchronize()
+        regular_time = time.time() - start
+
+        # Test query_sdf_batch
+        torch.cuda.synchronize()
+        start = time.time()
+        batch_result = robot_sdf.query_sdf_batch(points, configs)
+        torch.cuda.synchronize()
+        batch_time = time.time() - start
+
+        # Compare results
+        max_diff = (regular_result - batch_result).abs().max().item()
+        mean_diff = (regular_result - batch_result).abs().mean().item()
+        
+        print(f"query_sdf time:       {regular_time:.4f} seconds")
+        print(f"query_sdf_batch time: {batch_time:.4f} seconds")
+        print(f"Speedup factor:       {regular_time/batch_time:.2f}x")
+        print(f"Max difference:       {max_diff:.8f}")
+        print(f"Mean difference:      {mean_diff:.8f}")
+    
+    
+    print("\n=== Testing Gradients in Batch vs Regular ===")
+    device = 'cuda'
+    robot_sdf = RobotSDF(device)
+    
+    # Create test inputs
+    configs = torch.zeros((2, 6), device=device, requires_grad=True)  # 2 configs
+    points = torch.ones((2, 3, 3), device=device)  # 2 batches, 3 points each
+    
+    # Test regular version
+    sdf_regular = robot_sdf.query_sdf(points, configs)
+    loss_regular = sdf_regular.sum()
+    loss_regular.backward()
+    grad_regular = configs.grad.clone()
+    
+    # Reset gradients
+    configs.grad = None
+    
+    # Test batch version
+    sdf_batch = robot_sdf.query_sdf_batch(points, configs)
+    loss_batch = sdf_batch.sum()
+    loss_batch.backward()
+    grad_batch = configs.grad.clone()
+    
+    print("\nGradient comparison:")
+    print(f"Regular gradients:\n{grad_regular}")
+    print(f"Batch gradients:\n{grad_batch}")
+    print(f"Max difference: {(grad_regular - grad_batch).abs().max().item():.8f}")
+    
     
     

@@ -8,7 +8,8 @@ class CDFNetwork(nn.Module):
         output_dims=1,
         hidden_dims=[1024, 512, 256, 128, 128],
         skip_in=(2, 4),
-        use_skip_connections=True
+        use_skip_connections=True,
+        activation='relu'
     ):
         super(CDFNetwork, self).__init__()
         
@@ -28,12 +29,20 @@ class CDFNetwork(nn.Module):
             lin = nn.Linear(dims[layer], out_dim)
             setattr(self, f"lin{layer}", lin)
 
-        # Different activation options - uncomment one at a time to test
-        self.activation = nn.GELU()
-        #self.activation = nn.Tanh()
-        #self.activation = nn.Mish()
-        #self.activation = nn.SiLU()
-        #self.activation = nn.ReLU()
+        # Dictionary of available activation functions
+        self.activation_dict = {
+            'relu': nn.ReLU(),
+            'gelu': nn.GELU(),
+            'tanh': nn.Tanh(),
+            'mish': nn.Mish(),
+            'silu': nn.SiLU(),
+        }
+        
+        # Set activation function based on name
+        if activation.lower() not in self.activation_dict:
+            raise ValueError(f"Activation {activation} not supported. Choose from: {list(self.activation_dict.keys())}")
+        
+        self.activation = self.activation_dict[activation.lower()]
         
     def forward(self, x):
         input = x

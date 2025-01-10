@@ -189,7 +189,11 @@ class BubblePlanner:
             trajectory = np.vstack([bp.query(times).value for bp in bps])
             
             print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
-            return trajectory
+            return {
+                'waypoints': trajectory,
+                'bezier_curves': bps,  # These can be queried with bp.query(t) for t in [0,1]
+                'times': times
+            }
             
         except Exception as e:
             print(f"Planning failed: {str(e)}")
