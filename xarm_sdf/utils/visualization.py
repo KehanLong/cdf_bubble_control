@@ -13,7 +13,7 @@ sys.path.append(str(project_root))
 from models.xarm6_differentiable_fk import fk_xarm6_torch
 from data.generate_sdf import combine_gripper_meshes
 from robot_sdf import RobotSDF
-from training.network import SDFNetwork
+from sdf_training.network import SDFNetwork
 
 class SDFVisualizer:
     def __init__(self, device='cuda'):

@@ -7,7 +7,7 @@ sys.path.append(str(project_root))
 
 import torch
 import numpy as np
-from training.network import SDFNetwork
+from sdf_training.network import SDFNetwork
 from models.xarm6_differentiable_fk import fk_xarm6_torch, fk_xarm6_torch_batch
 
 class RobotSDF:

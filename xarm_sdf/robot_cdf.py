@@ -19,7 +19,7 @@ class RobotCDF:
     def _load_cdf_model(self):
         """Load trained CDF model"""
         model_dir = project_root / "trained_models" / "cdf"
-        model_path = model_dir / "best_model_bfgs_gelu.pth"
+        model_path = model_dir / "final_model_bfgs_gelu_continued.pth"
         
         model = CDFNetwork(activation='gelu').to(self.device)
         model.load_state_dict(torch.load(model_path))

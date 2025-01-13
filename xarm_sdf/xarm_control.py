@@ -4,7 +4,7 @@ import numpy as np
 from xarm_planning import XArmSDFVisualizer
 from typing import List, Tuple
 #from control.clf_cbf_qp import ClfCbfQpController
-from control.clf_cbf_qp_casadi import ClfCbfQpController
+from control.clf_cbf_qp import ClfCbfQpController
 from control.clf_dro_cbf import ClfCbfDrccpController
 
 
@@ -13,6 +13,7 @@ from control.pd_control import PDController
 import time
 import os
 import pickle
+from control.reference_governor_bezier import BezierReferenceGovernor
 
 class XArmController:
     def __init__(self, planner: XArmSDFVisualizer, control_type='pd'):
@@ -24,6 +25,8 @@ class XArmController:
         
         # Control parameters
         self.max_velocity = 2.0  # Matches test case
+
+        self.num_samples = 10
         
         # Initialize controllers
         self.pd_controller = PDController(kp=0.8, kd=0.1, max_velocity=self.max_velocity)
@@ -40,31 +43,31 @@ class XArmController:
             p2=1e2,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=0.5,
-            wasserstein_r=0.03,
+            wasserstein_r=0.01,
             epsilon=0.1,
-            num_samples=5  # Number of CBF samples to use
+            num_samples=self.num_samples  # Number of CBF samples to use
         )
 
-    def compute_control(self, current_pos: torch.Tensor, 
-                       target_pos: torch.Tensor,
+    def compute_control(self, current_joints: torch.Tensor, 
+                       target_joints: torch.Tensor,
                        current_vel: torch.Tensor) -> torch.Tensor:
         """Compute control based on selected controller type"""
         if self.control_type == 'pd':
             velocity_cmd = self.pd_controller.compute_control(
-                current_pos,
-                target_pos,
+                current_joints,
+                target_joints,
                 current_vel
             )
             print('PD velocity_cmd', velocity_cmd)
             
         elif self.control_type == 'clf_cbf':
             # Ensure we need gradients
-            current_pos.requires_grad_(True)
+            current_joints.requires_grad_(True)
             
             # Get SDF values without computing gradients in query_sdf
             h_values = self.planner.robot_cdf.query_cdf(
                 points=self.planner.points_robot.unsqueeze(0),
-                joint_angles=current_pos.unsqueeze(0),
+                joint_angles=current_joints.unsqueeze(0),
                 return_gradients=False  # Don't compute gradients here
             )
             
@@ -73,16 +76,16 @@ class XArmController:
             
             # Compute gradient through backprop
             h.backward()
-            dh_dtheta = current_pos.grad.clone()
-            current_pos.grad.zero_()  # Clear gradients
+            dh_dtheta = current_joints.grad.clone()
+            current_joints.grad.zero_()  # Clear gradients
 
             #print('cbf value', h.item() - 0.2)
             #print('cbf gradient', dh_dtheta)
             
             # Generate control input using CLF-CBF-QP
             velocity_cmd = self.clf_cbf_controller.generate_controller(
-                current_pos.detach().cpu().numpy(),
-                target_pos.cpu().numpy(),
+                current_joints.detach().cpu().numpy(),
+                target_joints.cpu().numpy(),
                 h.item(),
                 dh_dtheta.cpu().numpy()
             )
@@ -90,17 +93,19 @@ class XArmController:
         
         elif self.control_type == 'clf_dro_cbf':
             # Ensure we need gradients
-            current_pos.requires_grad_(True)
+            current_joints.requires_grad_(True)
             
             # Get SDF values for multiple points
             h_values = self.planner.robot_cdf.query_cdf(
                 points=self.planner.points_robot.unsqueeze(0),
-                joint_angles=current_pos.unsqueeze(0),
+                joint_angles=current_joints.unsqueeze(0),
                 return_gradients=False
             )
+
+            print('cdf value:', h_values.min().item())
             
             # Get the k smallest SDF values
-            k = 5  # Number of samples to use
+            k = self.num_samples  # Number of samples to use
             h_values_flat = h_values.flatten()
             top_k_values, _ = torch.topk(h_values_flat, k, largest=False)
             h_samples = top_k_values 
@@ -111,8 +116,8 @@ class XArmController:
             # Compute gradients for each of the k smallest values
             for h_val in h_samples:
                 h_val.backward(retain_graph=True)
-                h_grads.append(current_pos.grad.clone().cpu().numpy())
-                current_pos.grad.zero_()
+                h_grads.append(current_joints.grad.clone().cpu().numpy())
+                current_joints.grad.zero_()
             
             # Convert to numpy arrays
             h_samples_np = h_samples.detach().cpu().numpy()
@@ -121,8 +126,8 @@ class XArmController:
             
             # Generate control input using DR-CLF-CBF-QP
             velocity_cmd = self.clf_dro_cbf_controller.generate_controller(
-                current_pos.detach().cpu().numpy(),
-                target_pos.cpu().numpy(),
+                current_joints.detach().cpu().numpy(),
+                target_joints.cpu().numpy(),
                 h_samples_np,
                 h_grads_np,
                 dh_dt_samples
@@ -143,63 +148,72 @@ class XArmController:
         indices = np.linspace(10, len(trajectory)-1, num_points, dtype=int)
         return np.array(trajectory)[indices]
 
-    def execute_trajectory(self, trajectory: List[np.ndarray], dt: float = 0.02) -> Tuple[List[float], List[float]]:
-        """Execute trajectory using velocity control"""
+    def execute_trajectory(self, trajectory_data: dict, dt: float = 0.02, use_bezier: bool = True) -> Tuple[List[float], List[float]]:
+        """
+        Execute trajectory using velocity control.
+        
+        Args:
+            trajectory_data: Dictionary containing trajectory information
+                - waypoints: Discrete waypoints
+                - bezier_curves: Bezier curve segments (optional)
+                - times: Time parameterization
+            dt: Time step for control
+            use_bezier: Whether to use Bezier curves (True) or discrete waypoints (False)
+        """
         goal_distances = []
         sdf_distances = []
         
-        # Print original trajectory info
-        # print("\nOriginal Trajectory:")
-        # print(f"First config: {trajectory[0]}")
-        # print(f"Last config: {trajectory[-1]}")
-        
-        # Downsample trajectory
-        downsampled_traj = self.downsample_trajectory(trajectory, num_points=100)
-        print(f"\nDownsampled trajectory from {len(trajectory)} to {len(downsampled_traj)} points")
-        
-        # Initialize reference governor
         initial_state = self.planner.get_current_joint_states().cpu().numpy()
-        print(f"\nInitial robot state: {initial_state}")
         
-        governor = ReferenceGovernor(
-            initial_state=initial_state,
-            path_configs=trajectory,
-            dt=dt
-        )
+        # Initialize appropriate governor based on mode
+        if use_bezier and 'bezier_curves' in trajectory_data:
+            print("Using Bezier-based reference governor")
+            governor = BezierReferenceGovernor(
+                initial_state=initial_state,
+                trajectory_data=trajectory_data,
+                dt=dt
+            )
+        else:
+            print("Using discrete waypoint-based reference governor")
+            waypoints = (trajectory_data['waypoints'] if isinstance(trajectory_data, dict) 
+                        else trajectory_data)
+            governor = ReferenceGovernor(
+                initial_state=initial_state,
+                path_configs=waypoints,
+                dt=dt
+            )
 
         while True:
-            # Get current joint states
+            # Get current joint states and velocities
             current_joints = self.planner.get_current_joint_states()
-            
-            # Get reference from governor
-            reference_joints, s = governor.update(current_joints.cpu().numpy())
-            target_joints = torch.tensor(reference_joints, device=self.device)
-            
-            # Get current joint velocities
             current_velocities = torch.tensor([
                 p.getJointState(self.robot_id, i+1)[1]
                 for i in range(6)
             ], device=self.device)
 
-            start_time = time.time()
-
-            # Compute control
+            # Get reference based on governor type
+            if use_bezier and 'bezier_curves' in trajectory_data:
+                reference_joints, s, reference_vel = governor.update(current_joints.cpu().numpy())
+            else:
+                reference_joints, s = governor.update(current_joints.cpu().numpy())
+            
+            target_joints = torch.tensor(reference_joints, device=self.device)
+            
+            # Compute and apply control
             velocity_cmd = self.compute_control(
                 current_joints, 
                 target_joints,
                 current_velocities
             )
-            compute_time = time.time() - start_time
-            print(f"Control computation time: {compute_time:.4f} seconds")
 
-            # Apply velocity commands (matching test case)
+            # Apply velocity commands
             for i in range(6):
                 p.setJointMotorControl2(
                     bodyUniqueId=self.robot_id,
-                    jointIndex=i+1,  # Note: using i+1 for joint index
+                    jointIndex=i+1,
                     controlMode=p.VELOCITY_CONTROL,
                     targetVelocity=velocity_cmd[i].item(),
-                    force=100  # Consistent with test case
+                    force=100
                 )
 
             # Step simulation
@@ -210,9 +224,6 @@ class XArmController:
             current_ee_pos = self.planner.get_ee_position(current_joints)
             goal_dist = torch.norm(self.planner.goal - current_ee_pos.squeeze())
             goal_distances.append(goal_dist.item())
-
-            # Print progress
-            #print(f"Progress: {s:.2f}, Goal distance: {goal_dist:.4f}")
 
             # Break if we're close to the end of the trajectory
             if s > 0.99 and goal_dist < 0.02:
@@ -258,12 +269,12 @@ if __name__ == "__main__":
     if trajectory_whole is not None:
         # Initialize controller with PD control
         planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type)
-        controller = XArmController(planner, control_type='clf_dro_cbf')
+        controller = XArmController(planner, control_type='clf_dro_cbf')     # baselines: 'pd', 'clf_cbf' 
         
         if planner_type == 'bubble_cdf':
             # For bubble_cdf planner, trajectory_whole is a dictionary
             print(f"Original trajectory length: {len(trajectory_whole['waypoints'])}")
-            distances = controller.execute_trajectory(trajectory_whole['waypoints'])
+            distances = controller.execute_trajectory(trajectory_whole, use_bezier=True)
         else:
             # For other planners, trajectory_whole is directly the waypoints
             print(f"Original trajectory length: {len(trajectory_whole)}")
