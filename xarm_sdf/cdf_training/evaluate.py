@@ -16,6 +16,8 @@ from models.xarm_model import XArmFK
 from utils.visualization import SDFVisualizer
 from train_online_batch import compute_cdf_values
 
+from train_online_batch import CDFTrainer
+
 def evaluate_sdf_cdf_correlation(device='cuda'):
     """
     Evaluate correlation between SDF and CDF values with visualization
@@ -109,6 +111,104 @@ def evaluate_sdf_cdf_correlation(device='cuda'):
             scene_contact.add_geometry(sphere_contact)
             scene_contact.show()
 
+def create_evaluation_dataset(batch_q_size=50, batch_x_size=100, device='cuda', save_path='data/cdf_data/evaluation_dataset.pt'):
+    """
+    Create and save a fixed evaluation dataset
+    """
+    trainer = CDFTrainer("data/cdf_data/refined_bfgs_100_contact_db.npy", device=device)
+    trainer.batch_x = batch_x_size
+    trainer.batch_q = batch_q_size
+    
+    # Sample points and configs
+    points, configs, gt_cdf_values = trainer.sample_batch()
+    
+    # Save dataset
+    torch.save({
+        'points': points.cpu(),
+        'configs': configs.cpu(),
+        'gt_cdf_values': gt_cdf_values.cpu(),
+    }, save_path)
+    
+    print(f"Evaluation dataset saved to {save_path}")
+    return points, configs, gt_cdf_values
+
+def evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt', device='cuda'):
+    """
+    Perform quantitative evaluation using a fixed evaluation dataset
+    """
+    print("Loading evaluation dataset...")
+    data = torch.load(eval_dataset_path)
+    points = data['points'].to(device)      # [N, 3]
+    configs = data['configs'].to(device)    # [M, 6]
+    gt_cdf_values = data['gt_cdf_values'].to(device)  # [N, M]
+    
+    print("Initializing models...")
+    robot_sdf = RobotSDF(device=device)
+    robot_cdf = RobotCDF(device=device)
+    
+    print("Computing model predictions...")
+    with torch.no_grad():
+        # Reshape points and configs to match expected dimensions
+        points_expanded = points.unsqueeze(0).expand(configs.shape[0], -1, -1)  # [M, N, 3]
+        pred_cdf_values = robot_cdf.query_cdf(points_expanded, configs)         # [M, N]
+        # Transpose to match ground truth shape
+        pred_cdf_values = pred_cdf_values.t()  # [N, M]
+    
+    # both pred_cdf_values and gt_cdf_values are shape [N, M]
+    mse = torch.nn.functional.mse_loss(pred_cdf_values, gt_cdf_values).item()
+    mae = torch.nn.functional.l1_loss(pred_cdf_values, gt_cdf_values).item()
+    
+    # Compute correlation coefficient
+    pred_flat = pred_cdf_values.flatten()
+    gt_flat = gt_cdf_values.flatten()
+    correlation = torch.corrcoef(torch.stack([pred_flat, gt_flat]))[0,1].item()
+    
+    # Print results
+    print("\nQuantitative Evaluation Results:")
+    print(f"Mean Squared Error: {mse:.6f}")
+    print(f"Mean Absolute Error: {mae:.6f}")
+    print(f"Correlation Coefficient: {correlation:.6f}")
+    
+    # Visualize predictions vs ground truth
+    plt.figure(figsize=(10, 5))
+    
+    # Scatter plot
+    plt.subplot(121)
+    plt.scatter(gt_flat.detach().cpu(), pred_flat.detach().cpu(), alpha=0.1)
+    plt.plot([0, gt_flat.max().item()], [0, gt_flat.max().item()], 'r--')  # Perfect prediction line
+    plt.xlabel('Ground Truth CDF')
+    plt.ylabel('Predicted CDF')
+    plt.title('Predicted vs Ground Truth CDF')
+    
+    # Error histogram
+    plt.subplot(122)
+    errors = (pred_cdf_values - gt_cdf_values).detach().cpu().numpy()
+    plt.hist(errors.flatten(), bins=50)
+    plt.xlabel('Prediction Error')
+    plt.ylabel('Count')
+    plt.title('Error Distribution')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return {
+        'mse': mse,
+        'mae': mae,
+        'correlation': correlation,
+        'points': points,
+        'configs': configs,
+        'predictions': pred_cdf_values,
+        'ground_truth': gt_cdf_values
+    }
 
 if __name__ == "__main__":
-    evaluate_sdf_cdf_correlation() 
+    # Create evaluation dataset (only need to run once)
+    # create_evaluation_dataset()
+    
+    # Run evaluation
+    metrics = evaluate_quantitative()
+    
+    # Qualitative evaluation (commented out by default)
+    # evaluate_sdf_cdf_correlation()
+
+

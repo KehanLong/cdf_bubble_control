@@ -110,8 +110,8 @@ class XArmSDFVisualizer:
         elif planner_type == 'bubble_cdf':
             # Initialize Bubble Planner
             self.bubble_planner = BubblePlanner(
-                #robot_cdf=self.robot_cdf,
-                robot_cdf=self.robot_sdf,   # test with sdf
+                robot_cdf=self.robot_cdf,
+                #robot_cdf=self.robot_sdf,   # test with sdf
                 joint_limits=(
                     self.robot_fk.joint_limits[:, 0].cpu().numpy(),
                     self.robot_fk.joint_limits[:, 1].cpu().numpy()

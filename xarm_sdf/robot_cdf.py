@@ -19,9 +19,9 @@ class RobotCDF:
     def _load_cdf_model(self):
         """Load trained CDF model"""
         model_dir = project_root / "trained_models" / "cdf"
-        model_path = model_dir / "best_model_bfgs_relu.pth"
+        model_path = model_dir / "best_model_bfgs_gelu.pth"
         
-        model = CDFNetwork().to(self.device)
+        model = CDFNetwork(activation='gelu').to(self.device)
         model.load_state_dict(torch.load(model_path))
         model.eval()
         
@@ -44,6 +44,11 @@ class RobotCDF:
         B = joint_angles.shape[0]
         N = points.shape[1]
         
+        if return_gradients:
+            # Enable gradient tracking for joint angles only
+            joint_angles = joint_angles.detach().clone()
+            joint_angles.requires_grad_(True)
+        
         # Prepare input features
         sin_q = torch.sin(joint_angles)
         cos_q = torch.cos(joint_angles)
@@ -58,9 +63,6 @@ class RobotCDF:
         # Concatenate with points
         inputs = torch.cat([joint_features, points], dim=-1)  # [B, N, 21]
         
-        if return_gradients:
-            inputs.requires_grad_(True)
-        
         # Forward pass
         cdf_values = self.model(inputs.reshape(B*N, -1)).reshape(B, N)
         
@@ -69,17 +71,21 @@ class RobotCDF:
             
             for b in range(B):
                 for n in range(N):
+                    # The key fix: ensure scalar output for gradient computation
+                    scalar_output = cdf_values[b, n:n+1]  # Shape: [1]
+                    grad_outputs = torch.ones_like(scalar_output)  # Shape: [1]
+                    
                     try:
                         grad = torch.autograd.grad(
-                            cdf_values[b, n],
-                            inputs,
-                            retain_graph=True,
-                            allow_unused=True
+                            scalar_output,
+                            joint_angles,
+                            grad_outputs=grad_outputs,
+                            create_graph=True,
+                            retain_graph=True
                         )[0]
                         
                         if grad is not None:
-                            # Extract gradients for original joint angles only
-                            gradients[b, n] = grad[b, n, :6]
+                            gradients[b, n] = grad[b]
                     except Exception as e:
                         print(f"Warning: Gradient computation failed for batch {b}, point {n}: {e}")
             
@@ -88,19 +94,28 @@ class RobotCDF:
         return cdf_values
 
     def test_differentiability(self):
-        """Test if the model is differentiable"""
+        """Test if the model is differentiable and check eikonal constraint"""
         # Create test inputs
         points = torch.randn(1, 3, 3, device=self.device)  # [batch, num_points, 3]
         joint_angles = torch.zeros(1, 6, device=self.device, requires_grad=True)
         
-        # Forward pass
-        cdf = self.query_cdf(points, joint_angles)
+        # Get CDF values and gradients
+        cdf_values, gradients = self.query_cdf(points, joint_angles, return_gradients=True)
         
-        # Check if gradients flow
+        # Check gradient norms (eikonal constraint)
+        gradient_norms = torch.norm(gradients, dim=-1)  # [B, N]
+        mean_norm = gradient_norms.mean().item()
+        norm_deviation = (gradient_norms - 1.0).abs().mean().item()
+        
+        print("\nEikonal Constraint Check:")
+        print(f"Mean gradient norm: {mean_norm:.4f} (should be close to 1.0)")
+        print(f"Mean deviation from 1.0: {norm_deviation:.4f} (should be close to 0.0)")
+        
+        # Original differentiability test
         try:
-            loss = cdf.sum()
+            loss = cdf_values.sum()
             loss.backward()
-            print("Gradient computation successful!")
+            print("\nGradient computation successful!")
             print(f"Joint angles gradient: {joint_angles.grad}")
         except Exception as e:
             print(f"Gradient computation failed: {str(e)}")
@@ -130,7 +145,16 @@ if __name__ == "__main__":
     for i in range(len(test_points[0])):
         print(f"\nPoint {test_points[0,i].cpu().numpy()}:")
         print(f"CDF value: {cdf_values[0,i].item():.6f}")
-        print(f"Gradients: {gradients[0,i].cpu().numpy()}")
+        print(f"Gradients: {gradients[0,i].detach().cpu().numpy()}")
     
     # Test differentiability
     robot_cdf.test_differentiability() 
+    
+    # Add eikonal constraint visualization for test points
+    print("\nEikonal Constraint at Test Points:")
+    gradient_norms = torch.norm(gradients, dim=-1)  # [B, N]
+    for i in range(len(test_points[0])):
+        print(f"\nPoint {test_points[0,i].cpu().numpy()}:")
+        print(f"CDF value: {cdf_values[0,i].item():.6f}")
+        print(f"Gradient norm: {gradient_norms[0,i].item():.6f} (should be close to 1.0)")
+        print(f"Gradients: {gradients[0,i].detach().cpu().numpy()}") 

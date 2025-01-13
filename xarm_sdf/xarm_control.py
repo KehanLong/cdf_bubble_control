@@ -3,7 +3,11 @@ import torch
 import numpy as np
 from xarm_planning import XArmSDFVisualizer
 from typing import List, Tuple
-from control.clf_cbf_qp import ClfCbfQpController
+#from control.clf_cbf_qp import ClfCbfQpController
+from control.clf_cbf_qp_casadi import ClfCbfQpController
+from control.clf_dro_cbf import ClfCbfDrccpController
+
+
 from control.reference_governor import ReferenceGovernor
 from control.pd_control import PDController
 import time
@@ -30,6 +34,16 @@ class XArmController:
             cbf_rate=0.5,
             safety_margin=0.2
         )
+        # Add DR-CLF-CBF controller
+        self.clf_dro_cbf_controller = ClfCbfDrccpController(
+            p1=1e0,    # Control effort penalty
+            p2=1e2,    # CLF slack variable penalty
+            clf_rate=1.0,
+            cbf_rate=0.5,
+            wasserstein_r=0.03,
+            epsilon=0.1,
+            num_samples=5  # Number of CBF samples to use
+        )
 
     def compute_control(self, current_pos: torch.Tensor, 
                        target_pos: torch.Tensor,
@@ -43,71 +57,77 @@ class XArmController:
             )
             print('PD velocity_cmd', velocity_cmd)
             
-        else:  # clf_cbf
-            if self.control_type == 'clf_cbf':
-                # Ensure we need gradients
-                current_pos.requires_grad_(True)
-                
-                # Get SDF values without computing gradients in query_sdf
-                sdf_values = self.planner.robot_sdf.query_sdf(
-                    points=self.planner.points_robot.unsqueeze(0),
-                    joint_angles=current_pos.unsqueeze(0),
-                    return_gradients=False  # Don't compute gradients here
-                )
-                
-                # Get minimum SDF value
-                h = sdf_values.min()
-                
-                # Compute gradient through backprop
-                h.backward()
-                dh_dtheta = current_pos.grad.clone()
-                current_pos.grad.zero_()  # Clear gradients
+        elif self.control_type == 'clf_cbf':
+            # Ensure we need gradients
+            current_pos.requires_grad_(True)
+            
+            # Get SDF values without computing gradients in query_sdf
+            h_values = self.planner.robot_cdf.query_cdf(
+                points=self.planner.points_robot.unsqueeze(0),
+                joint_angles=current_pos.unsqueeze(0),
+                return_gradients=False  # Don't compute gradients here
+            )
+            
+            # Get minimum SDF/CDF value
+            h = h_values.min() - 0.35
+            
+            # Compute gradient through backprop
+            h.backward()
+            dh_dtheta = current_pos.grad.clone()
+            current_pos.grad.zero_()  # Clear gradients
 
-                print('cbf value', h.item())
-                print('cbf gradient', dh_dtheta)
-                
-                # Generate control input using CLF-CBF-QP
-                velocity_cmd = self.clf_cbf_controller.generate_controller(
-                    current_pos.detach().cpu().numpy(),
-                    target_pos.cpu().numpy(),
-                    h.item(),
-                    dh_dtheta.cpu().numpy()
-                )
-                velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
-            else:
-                # Convert to numpy for the controller
-                current_config = current_pos.cpu().numpy()
-                reference_config = target_pos.cpu().numpy()
-                
-                # Get CBF value and gradient from the SDF
-                start_sdf = time.time()
-                sdf_values, gradients = self.planner.robot_sdf.query_sdf(
-                    points=self.planner.points_robot.unsqueeze(0),
-                    joint_angles=current_pos.unsqueeze(0),
-                    return_gradients=True,
-                    gradient_method='analytic'
-                )
-                
-                # Get minimum SDF value as CBF value
-                h = sdf_values.min().item()
-                min_idx = sdf_values.argmin()
-                dh_dtheta = gradients[0, min_idx].detach().cpu().numpy()
-                
-                
-                # Generate control input using CLF-CBF-QP
-                start_qp = time.time()
-                velocity_cmd = self.clf_cbf_controller.generate_controller(
-                    current_config,
-                    reference_config,
-                    h,
-                    dh_dtheta
-                )
-                
-                
-                #print('Raw CLF-CBF velocity_cmd', velocity_cmd)
-                # velocity_cmd = velocity_cmd * 100.0  # Scale up by 100x
-                #print('Scaled CLF-CBF velocity_cmd', velocity_cmd)
-                velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
+            #print('cbf value', h.item() - 0.2)
+            #print('cbf gradient', dh_dtheta)
+            
+            # Generate control input using CLF-CBF-QP
+            velocity_cmd = self.clf_cbf_controller.generate_controller(
+                current_pos.detach().cpu().numpy(),
+                target_pos.cpu().numpy(),
+                h.item(),
+                dh_dtheta.cpu().numpy()
+            )
+            velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
+        
+        elif self.control_type == 'clf_dro_cbf':
+            # Ensure we need gradients
+            current_pos.requires_grad_(True)
+            
+            # Get SDF values for multiple points
+            h_values = self.planner.robot_cdf.query_cdf(
+                points=self.planner.points_robot.unsqueeze(0),
+                joint_angles=current_pos.unsqueeze(0),
+                return_gradients=False
+            )
+            
+            # Get the k smallest SDF values
+            k = 5  # Number of samples to use
+            h_values_flat = h_values.flatten()
+            top_k_values, _ = torch.topk(h_values_flat, k, largest=False)
+            h_samples = top_k_values 
+            
+            # Initialize gradient storage
+            h_grads = []
+            
+            # Compute gradients for each of the k smallest values
+            for h_val in h_samples:
+                h_val.backward(retain_graph=True)
+                h_grads.append(current_pos.grad.clone().cpu().numpy())
+                current_pos.grad.zero_()
+            
+            # Convert to numpy arrays
+            h_samples_np = h_samples.detach().cpu().numpy()
+            h_grads_np = np.stack(h_grads)
+            dh_dt_samples = np.zeros(k)  # Assuming static environment
+            
+            # Generate control input using DR-CLF-CBF-QP
+            velocity_cmd = self.clf_dro_cbf_controller.generate_controller(
+                current_pos.detach().cpu().numpy(),
+                target_pos.cpu().numpy(),
+                h_samples_np,
+                h_grads_np,
+                dh_dt_samples
+            )
+            velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
         # Clip velocities
         velocity_cmd = torch.clamp(velocity_cmd, -self.max_velocity, self.max_velocity)
@@ -238,7 +258,7 @@ if __name__ == "__main__":
     if trajectory_whole is not None:
         # Initialize controller with PD control
         planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type)
-        controller = XArmController(planner, control_type='clf_cbf')
+        controller = XArmController(planner, control_type='clf_dro_cbf')
         
         if planner_type == 'bubble_cdf':
             # For bubble_cdf planner, trajectory_whole is a dictionary

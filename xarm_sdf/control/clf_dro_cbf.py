@@ -1,0 +1,191 @@
+import numpy as np
+import casadi as ca
+import time
+
+class ClfCbfDrccpController:
+    def __init__(self, p1=1e0, p2=1e3, clf_rate=1.0, cbf_rate=1.0, 
+                 wasserstein_r=0.02, epsilon=0.1, num_samples=5):
+        # Control parameters
+        self.p1 = p1  # Control effort penalty
+        self.p2 = p2  # CLF slack variable penalty
+        self.clf_rate = clf_rate
+        self.cbf_rate = cbf_rate
+        self.wasserstein_r = wasserstein_r
+        self.epsilon = epsilon
+        self.num_samples = num_samples
+        
+        self.prev_u = None
+        self.solve_fail = False
+        
+        # Setup the optimization solver
+        self.setup_solver()
+        
+    def setup_solver(self):
+        
+        # Decision variables (total: 6 + 1 + 1 + num_samples (e.g. 5) = 13 variables)
+        u = ca.SX.sym('u', 6)         # Control inputs for 6-DOF arm
+        delta = ca.SX.sym('delta')     # CLF relaxation
+        s = ca.SX.sym('s')             # DRO variable
+        beta = ca.SX.sym('beta', self.num_samples)    # DRO multipliers
+        
+        
+        # Combine all decision variables
+        decision_vars = ca.vertcat(u, delta, s, beta)
+        
+        # Parameters
+        current_config = ca.SX.sym('current_config', 6)
+        reference_config = ca.SX.sym('reference_config', 6)
+        h_samples = ca.SX.sym('h', self.num_samples)
+        h_grads = ca.SX.sym('h_grad', self.num_samples, 6)
+        dh_dt = ca.SX.sym('dh_dt', self.num_samples)
+        
+        
+        # CLF computation
+        error = current_config - reference_config
+        V = 0.5 * ca.dot(error, error)
+        dV = ca.dot(error, u)
+        
+        # Constraints
+        g = []
+        lbg = []
+        ubg = []
+        
+        # CLF constraint
+        g.append(dV + self.clf_rate * V - delta)
+        lbg.append(-ca.inf)
+        ubg.append(0)
+        
+        
+        # Following Proposition 1 in the theory:
+        # Construct u_bar = [u; 1; 1]
+        u_bar = ca.vertcat(*[u[i] for i in range(6)])  # First add all elements of u
+        u_bar = ca.vertcat(u_bar, 1.0, 1.0)  # Then append the two ones
+        
+        
+        # DRO constraints for each sample
+        for i in range(self.num_samples):
+            try:
+                # Get the gradient for the current sample
+                grad_i = h_grads[i, :]
+                
+                # Construct xi = [grad_h; h; dh_dt] for each sample
+                # First create a list of all components
+                xi_components = []
+                for j in range(6):  # Add gradient components
+                    xi_components.append(grad_i[j])
+                xi_components.append(h_samples[i])  # Add CBF value
+                xi_components.append(dh_dt[i])      # Add time derivative
+                
+                # Concatenate all components
+                xi_i = ca.vertcat(*xi_components)
+                
+                #print(f"Sample {i}: Created xi_i with shape: {xi_i.shape}")
+                
+                # beta_i >= s - xi_i^T * u_bar
+                constraint_value = s - ca.dot(xi_i, u_bar) - beta[i]
+                g.append(constraint_value)
+                lbg.append(-ca.inf)
+                ubg.append(0)
+                
+            except Exception as e:
+                print(f"Error processing sample {i}: {str(e)}")
+                raise
+        
+        
+        # Wasserstein radius constraint
+        g.append(self.wasserstein_r * ca.mmax(ca.vertcat(1, ca.norm_inf(u))) - 
+                s * self.epsilon + (1/self.num_samples) * ca.sum1(beta))
+        lbg.append(-ca.inf)
+        ubg.append(0)
+        
+        # Non-negativity constraints for beta
+        g.append(beta)
+        lbg.extend([0] * self.num_samples)
+        ubg.extend([ca.inf] * self.num_samples)
+        
+        # Control limits
+        g.append(u)
+        lbg.extend([-2.0] * 6)
+        ubg.extend([2.0] * 6)
+        
+        # Objective function
+        obj = (self.p1 * ca.sumsqr(u) + 
+               self.p2 * delta**2)
+        
+        
+        # Create solver
+        opts = {
+            'print_time': 0,
+            'ipopt': {
+                'print_level': 0,
+                'max_iter': 100,
+                'tol': 1e-3,
+                'acceptable_tol': 1e-3,
+                'warm_start_init_point': 'yes'
+            }
+        }
+        
+        try:
+            nlp = {
+                'x': ca.vertcat(u, delta, s, beta),
+                'p': ca.vertcat(current_config, reference_config, h_samples, 
+                               h_grads.reshape((-1, 1)), dh_dt),
+                'f': obj,
+                'g': ca.vertcat(*g)
+            }
+            
+            self.solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+            self.lbg = lbg
+            self.ubg = ubg
+            print("Solver setup complete!")
+            
+        except Exception as e:
+            print(f"Error creating solver: {str(e)}")
+            raise
+        
+        # Initialize solution guess with correct dimensions
+        self.x0 = np.zeros(6 + 1 + 1 + self.num_samples)  # [u, delta, s, beta]
+        
+    def generate_controller(self, current_config, reference_config, 
+                           h_samples, h_grad_samples, dh_dt_samples):
+        try:
+            # print("Generating control...")
+            # print(f"Dimensions check:")
+            # print(f"current_config: {current_config.shape}")
+            # print(f"h_samples: {h_samples.shape}")
+            # print(f"h_grad_samples: {h_grad_samples.shape}")
+            
+            # Pack parameters
+            p = np.concatenate([
+                current_config,
+                reference_config,
+                h_samples,
+                h_grad_samples.flatten(),
+                dh_dt_samples
+            ])
+            
+            
+            # Initial guess should match the number of decision variables
+            x0 = np.zeros(6 + 1 + 1 + self.num_samples)  # [u, delta, s, beta]
+            #print(f"Initial guess dimension: {x0.shape}")
+            
+            # Solve optimization
+            sol = self.solver(
+                x0=x0,
+                lbg=self.lbg,
+                ubg=self.ubg,
+                p=p
+            )
+            
+            # Extract solution
+            x_opt = sol['x'].full().flatten()
+            u_new = x_opt[:6]  # First 6 elements are the control inputs
+            
+            #print(f"Solution found with dimension: {x_opt.shape}")
+            #print(f"Control output dimension: {u_new.shape}")
+            
+            return u_new
+            
+        except Exception as e:
+            print(f"[DR-CLF-CBF-QP] Solver failed: {str(e)}")
+            return np.zeros(6) 

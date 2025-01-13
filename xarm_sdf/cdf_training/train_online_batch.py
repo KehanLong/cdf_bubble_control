@@ -135,7 +135,8 @@ def train_cdf_network(
     learning_rate=0.001,
     device='cuda',
     loss_threshold=0.001,
-    activation='relu'
+    activation='relu',
+    pretrained_model=None
 ):
     # Convert paths to absolute paths
     contact_db_path = Path(contact_db_path)
@@ -156,16 +157,23 @@ def train_cdf_network(
     # Initialize trainer
     trainer = CDFTrainer(contact_db_path, device)
     
-    # Initialize model with specified activation
+    # Initialize model and load pretrained weights if specified
     model = CDFNetwork(activation=activation).to(device)
+    if pretrained_model:
+        print(f"Loading pretrained model from: {pretrained_model}")
+        model.load_state_dict(torch.load(pretrained_model))
+        # Create new filenames for continued training
+        model_filename = f'best_model_bfgs_{activation}_continued.pth'
+        final_model_filename = f'final_model_bfgs_{activation}_continued.pth'
+    else:
+        model_filename = f'best_model_bfgs_{activation}.pth'
+        final_model_filename = f'final_model_bfgs_{activation}_final.pth'
+    
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5000,
         threshold=0.01, verbose=True
     )
-    
-    # Create model filename with activation type
-    model_filename = f'best_model_bfgs_{activation}.pth'
     
     # Training loop
     best_loss = float('inf')
@@ -216,16 +224,19 @@ def train_cdf_network(
                   f"Eikonal: {eikonal_loss.item():.6f} "
                   f"Time: {epoch_time:.3f}s")
         
-        # Save best model with activation in filename
+        # Save both best model and final model
         if loss.item() < best_loss:
             best_loss = loss.item()
             best_model_state = model.state_dict()
             torch.save(best_model_state, model_save_dir / model_filename)
-        
-        # Early stopping
-        if loss.item() <= loss_threshold:
+
+        if loss.item() < loss_threshold:
             print(f"Loss threshold {loss_threshold} reached. Stopping training.")
             break
+    
+    # Save final model state regardless of performance
+    torch.save(model.state_dict(), model_save_dir / final_model_filename)
+    print(f"Final model saved as: {final_model_filename}")
     
     # Load best model
     model.load_state_dict(best_model_state)
@@ -238,13 +249,17 @@ if __name__ == "__main__":
     # Use relative paths from project root
     contact_db_path = "data/cdf_data/refined_bfgs_100_contact_db.npy"
     model_save_dir = "trained_models/cdf"
+
+
+    pretrained_model = "trained_models/cdf/best_model_bfgs_gelu.pth"
     
     model, final_loss = train_cdf_network(
         contact_db_path=contact_db_path,
         model_save_dir=model_save_dir,
-        num_epochs=8000,
-        learning_rate=0.001,
+        num_epochs=4000,
+        learning_rate=0.001,  
         device='cuda',
         loss_threshold=1e-4,
-        activation='relu'    #relu, gelu, tanh, mish, silu
+        activation='gelu',
+        pretrained_model=pretrained_model
     ) 

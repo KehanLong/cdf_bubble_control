@@ -50,15 +50,15 @@ class BubblePlanner:
         
         
         # Query CDF model
-        cdf_values = self.robot_cdf.query_sdf(
+        cdf_values = self.robot_cdf.query_cdf(
             points=obstacle_points,      # [B, N, 3]
             joint_angles=config_tensor,  # [B, 6]
             return_gradients=False
         )
         
-        min_cdf = cdf_values.min().detach().cpu().numpy()
+        min_cdf = cdf_values.min().detach().cpu().numpy() - 0.1  # 0.1 for safety
 
-        min_cdf = min(min_cdf * 5, self.max_cdf)
+        min_cdf = min(min_cdf, self.max_cdf)
 
         #print(f"Min CDF: {min_cdf}")
         
