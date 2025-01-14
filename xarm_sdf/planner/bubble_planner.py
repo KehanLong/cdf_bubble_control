@@ -10,12 +10,21 @@ from sdf_marching.overlap import position_to_max_circle_idx
 from sdf_marching.samplers.tracing import trace_toward_graph_all
 from sdf_marching.discrete import get_shortest_path
 from sdf_marching.cvx import edgeseq_to_traj_constraint_bezier, bezier_cost_all
+import time
 
 @dataclass
 class Bubble:
     """Represents a configuration space bubble"""
     center: np.ndarray  # Configuration at bubble center
     radius: float       # Bubble radius in configuration space
+
+@dataclass
+class PlanningMetrics:
+    success: bool
+    num_collision_checks: int
+    path_length: float
+    num_samples: int
+    planning_time: float
 
 class BubblePlanner:
     def __init__(self, robot_cdf, joint_limits, device='cuda', random_seed=42):
@@ -31,14 +40,16 @@ class BubblePlanner:
         # Planning parameters
         self.epsilon = 5E-2          # Bubble expansion parameter
         self.min_radius = 1E-2       # Minimum bubble radius
-        self.max_cdf = 1.0        # Maximum trusted CDF radius
+        self.max_cdf = 1.0           # Maximum trusted CDF radius
         self.num_samples = 5E4
         self.max_iterations = 5E4
         self.step_size = 0.2
         self.goal_bias = 0.1
+        self.cdf_query_count = 0
 
     def query_cdf(self, config: np.ndarray, obstacle_points: torch.Tensor) -> float:
         """Query CDF value for a given configuration"""
+        self.cdf_query_count += 1  # Count each CDF query
         # Convert config to tensor and ensure [B, 6] shape
         config_tensor = torch.tensor(config, device=self.device, dtype=torch.float32)
         if config_tensor.dim() == 1:
@@ -56,7 +67,7 @@ class BubblePlanner:
             return_gradients=False
         )
         
-        min_cdf = cdf_values.min().detach().cpu().numpy() - 0.1  # 0.1 for safety
+        min_cdf = cdf_values.min().detach().cpu().numpy()   # 0.1 for safety
 
         min_cdf = min(min_cdf, self.max_cdf)
 
@@ -100,8 +111,25 @@ class BubblePlanner:
             # Create RNG with seed
             rng = np.random.default_rng(self.random_seed)
             
-            # Generate bubbles using RRT-Connect
-            overlaps_graph, max_circles, _ = get_rapidly_exploring_connect(
+            # Bi-directional bubble sampling-based planning
+            # overlaps_graph, max_circles, _ = get_rapidly_exploring_connect(
+            #     cdf_wrapper,
+            #     self.epsilon,
+            #     self.min_radius,
+            #     int(self.num_samples),
+            #     self.joint_limits[0],
+            #     self.joint_limits[1],
+            #     start_point=start_config,
+            #     batch_size=100,
+            #     max_retry=500,
+            #     max_retry_epsilon=100,
+            #     max_num_iterations=int(self.max_iterations),
+            #     end_point=goal_config,
+            #     rng=rng
+            # )
+
+            # one directional bubble sampling-based planning
+            overlaps_graph, max_circles, _ = get_rapidly_exploring(
                 cdf_wrapper,
                 self.epsilon,
                 self.min_radius,
@@ -111,10 +139,7 @@ class BubblePlanner:
                 start_point=start_config,
                 batch_size=100,
                 max_retry=500,
-                max_retry_epsilon=100,
                 max_num_iterations=int(self.max_iterations),
-                inflate_factor=1.0,
-                prc=0.1,
                 end_point=goal_config,
                 rng=rng
             )
@@ -138,6 +163,9 @@ class BubblePlanner:
     def plan(self, start_config: np.ndarray, goal_config: np.ndarray, obstacle_points: torch.Tensor):
         """Plan a path from start to goal configuration"""
         print("\nStarting bubble-based planning...")
+        
+        start_time = time.time()
+        self.cdf_query_count = 0  # Reset counter
         
         try:
             # Generate bubbles with obstacle points
@@ -189,10 +217,21 @@ class BubblePlanner:
             trajectory = np.vstack([bp.query(times).value for bp in bps])
             
             print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
+            
+            metrics = PlanningMetrics(
+                success=True,
+                num_collision_checks=self.cdf_query_count,
+                path_length=np.sum([np.linalg.norm(trajectory[i+1] - trajectory[i]) 
+                                  for i in range(len(trajectory)-1)]),
+                num_samples=len(overlaps_graph.vs),  # Number of bubbles/samples
+                planning_time=time.time() - start_time
+            )
+            
             return {
                 'waypoints': trajectory,
-                'bezier_curves': bps,  # These can be queried with bp.query(t) for t in [0,1]
-                'times': times
+                'bezier_curves': bps,
+                'times': times,
+                'metrics': metrics
             }
             
         except Exception as e:

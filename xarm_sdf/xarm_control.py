@@ -1,6 +1,8 @@
 import pybullet as p
 import torch
 import numpy as np
+import imageio
+
 from xarm_planning import XArmSDFVisualizer
 from typing import List, Tuple
 #from control.clf_cbf_qp import ClfCbfQpController
@@ -64,30 +66,46 @@ class XArmController:
             # Ensure we need gradients
             current_joints.requires_grad_(True)
             
-            # Get SDF values without computing gradients in query_sdf
+            # Get full point cloud including dynamic obstacles and their velocities
+            full_points, point_velocities = self.env.get_full_point_cloud()
+            
+            # Make points require gradients for computing dh_dp
+            full_points.requires_grad_(True)
+            
+            # Get SDF values with gradients for points
             h_values = self.planner.robot_cdf.query_cdf(
-                points=self.planner.points_robot.unsqueeze(0),
+                points=full_points,
                 joint_angles=current_joints.unsqueeze(0),
-                return_gradients=False  # Don't compute gradients here
+                return_gradients=False
             )
             
-            # Get minimum SDF/CDF value
-            h = h_values.min() - 0.35
+            # Get minimum SDF/CDF value and index
+            h_min, min_idx = h_values.min(dim=1)
+            h = h_min - 0.35
             
-            # Compute gradient through backprop
+            # Compute gradient w.r.t points (dh_dp)
+            h.backward(retain_graph=True)
+            dh_dp = full_points.grad[0, min_idx].clone()  # Shape: (3,)
+            full_points.grad.zero_()
+            
+            # Compute gradient w.r.t joints (dh_dtheta)
             h.backward()
             dh_dtheta = current_joints.grad.clone()
-            current_joints.grad.zero_()  # Clear gradients
+            current_joints.grad.zero_()
 
-            #print('cbf value', h.item() - 0.2)
-            #print('cbf gradient', dh_dtheta)
+            # Get velocity of closest point (dp_dt)
+            dp_dt = point_velocities[0, min_idx]  # Shape: (3,)
             
-            # Generate control input using CLF-CBF-QP
+            # Compute dh_dt using chain rule
+            dh_dt = torch.dot(dh_dp, dp_dt).item()  # Scalar value
+
+            # Generate control input using CLF-CBF-QP with correct dh_dt
             velocity_cmd = self.clf_cbf_controller.generate_controller(
                 current_joints.detach().cpu().numpy(),
                 target_joints.cpu().numpy(),
                 h.item(),
-                dh_dtheta.cpu().numpy()
+                dh_dtheta.cpu().numpy(),
+                dh_dt  # Now using the correct dh_dt
             )
             velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
@@ -95,42 +113,62 @@ class XArmController:
             # Ensure we need gradients
             current_joints.requires_grad_(True)
             
+            # Get full point cloud including dynamic obstacles and their velocities
+            full_points, point_velocities = self.env.get_full_point_cloud()
+            full_points.requires_grad_(True)
+            
             # Get SDF values for multiple points
             h_values = self.planner.robot_cdf.query_cdf(
-                points=self.planner.points_robot.unsqueeze(0),
+                points=full_points,
                 joint_angles=current_joints.unsqueeze(0),
                 return_gradients=False
             )
 
             print('cdf value:', h_values.min().item())
             
-            # Get the k smallest SDF values
-            k = self.num_samples  # Number of samples to use
+            # Get the k smallest SDF values and their indices
+            k = self.num_samples
             h_values_flat = h_values.flatten()
-            top_k_values, _ = torch.topk(h_values_flat, k, largest=False)
-            h_samples = top_k_values 
+            top_k_values, top_k_indices = torch.topk(h_values_flat, k, largest=False)
+            h_samples = top_k_values
             
-            # Initialize gradient storage
-            h_grads = []
+            # Initialize storage for gradients and dh_dt values
+            h_grads = []  # For dh_dtheta
+            dh_dt_samples = []  # For dh_dt
             
-            # Compute gradients for each of the k smallest values
-            for h_val in h_samples:
+            # Compute gradients and dh_dt for each of the k smallest values
+            for idx, h_val in zip(top_k_indices, h_samples):
+                # Compute dh_dp
+                h_val.backward(retain_graph=True)
+                dh_dp = full_points.grad[0, idx].clone()  # Shape: (3,)
+
+                full_points.grad.zero_()
+                
+                # Compute dh_dtheta
                 h_val.backward(retain_graph=True)
                 h_grads.append(current_joints.grad.clone().cpu().numpy())
                 current_joints.grad.zero_()
+                
+                # Get point velocity (dp_dt)
+                dp_dt = point_velocities[0, idx]  # Shape: (3,)
+                
+                # Compute dh_dt using chain rule
+                dh_dt = torch.dot(dh_dp, dp_dt).item()
+
+                dh_dt_samples.append(dh_dt)
             
             # Convert to numpy arrays
             h_samples_np = h_samples.detach().cpu().numpy()
             h_grads_np = np.stack(h_grads)
-            dh_dt_samples = np.zeros(k)  # Assuming static environment
+            dh_dt_samples_np = np.array(dh_dt_samples)
             
-            # Generate control input using DR-CLF-CBF-QP
+            # Generate control input using DR-CLF-CBF-QP with correct dh_dt values
             velocity_cmd = self.clf_dro_cbf_controller.generate_controller(
                 current_joints.detach().cpu().numpy(),
                 target_joints.cpu().numpy(),
                 h_samples_np,
                 h_grads_np,
-                dh_dt_samples
+                dh_dt_samples_np  # Now using correct dh_dt values
             )
             velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
@@ -148,7 +186,8 @@ class XArmController:
         indices = np.linspace(10, len(trajectory)-1, num_points, dtype=int)
         return np.array(trajectory)[indices]
 
-    def execute_trajectory(self, trajectory_data: dict, dt: float = 0.02, use_bezier: bool = True) -> Tuple[List[float], List[float]]:
+    def execute_trajectory(self, trajectory_data: dict, dt: float = 0.02, use_bezier: bool = True, 
+                          save_video: bool = False) -> Tuple[List[float], List[float]]:
         """
         Execute trajectory using velocity control.
         
@@ -159,9 +198,20 @@ class XArmController:
                 - times: Time parameterization
             dt: Time step for control
             use_bezier: Whether to use Bezier curves (True) or discrete waypoints (False)
+            save_video: Whether to save execution video (default: False)
         """
         goal_distances = []
         sdf_distances = []
+        frames = []  # Will remain empty if save_video is False
+        
+        # Add video parameters only if saving video
+        if save_video:
+            width = 1920
+            height = 1080
+            fps = 30
+            frame_interval = max(1, int((1/dt) / fps))
+        
+        step = 0
         
         initial_state = self.planner.get_current_joint_states().cpu().numpy()
         
@@ -216,18 +266,30 @@ class XArmController:
                     force=100
                 )
 
-            # Step simulation
-            p.stepSimulation()
-            time.sleep(dt)
+            # Step simulation multiple times per control step
+            for _ in range(int(dt / (1/200.0))):  # Add this loop
+                self.env.step()  # This will update obstacle positions
 
             # Record metrics
             current_ee_pos = self.planner.get_ee_position(current_joints)
             goal_dist = torch.norm(self.planner.goal - current_ee_pos.squeeze())
             goal_distances.append(goal_dist.item())
 
+            # Capture frame only if video saving is enabled
+            if save_video and step % frame_interval == 0:
+                frames.append(self.planner._capture_frame(step, 1000, width, height))
+            step += 1
+            
             # Break if we're close to the end of the trajectory
-            if s > 0.99 and goal_dist < 0.02:
+            if s > 0.99 and goal_dist < 0.08:
                 break
+
+            time.sleep(dt)
+
+        # Save video only if enabled
+        if save_video and frames:
+            print("Saving execution video...")
+            imageio.mimsave(f'execution_{self.control_type}.mp4', frames, fps=fps)
 
         return goal_distances, sdf_distances
 
@@ -267,14 +329,14 @@ if __name__ == "__main__":
         p.disconnect()
     
     if trajectory_whole is not None:
-        # Initialize controller with PD control
+        # Initialize controller 
         planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type)
         controller = XArmController(planner, control_type='clf_dro_cbf')     # baselines: 'pd', 'clf_cbf' 
         
         if planner_type == 'bubble_cdf':
             # For bubble_cdf planner, trajectory_whole is a dictionary
             print(f"Original trajectory length: {len(trajectory_whole['waypoints'])}")
-            distances = controller.execute_trajectory(trajectory_whole, use_bezier=True)
+            distances = controller.execute_trajectory(trajectory_whole, use_bezier=True, save_video=False)
         else:
             # For other planners, trajectory_whole is directly the waypoints
             print(f"Original trajectory length: {len(trajectory_whole)}")

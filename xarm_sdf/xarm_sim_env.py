@@ -7,7 +7,7 @@ import time
 
 
 class XArmEnvironment:
-    def __init__(self, gui=True, add_default_objects=True):
+    def __init__(self, gui=True, add_default_objects=True, add_dynamic_obstacles=True):
         """Initialize PyBullet environment with xArm robot"""
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -16,7 +16,7 @@ class XArmEnvironment:
         # Load basic environment
         self.plane_id = p.loadURDF("plane.urdf")
         self.robot_base_pos = [-0.6, 0.0, 0.625]
-        self.robot_id = p.loadURDF("xarm_description/xarm6_with_gripper.urdf",  # or xarm6_robot.urdf
+        self.robot_id = p.loadURDF("xarm_description/xarm6_with_gripper.urdf",
                                  self.robot_base_pos,
                                  useFixedBase=True)
         self.table_id = p.loadURDF("table/table.urdf", [0, 0, 0])
@@ -24,31 +24,43 @@ class XArmEnvironment:
         # Store objects for tracking
         self.objects = []
         
+        # Store dynamic obstacles
+        self.dynamic_obstacles = []
+        
+        # Cache for static point cloud
+        self.cached_static_points = None
+        
         # Add default objects if requested
         if add_default_objects:
             self.add_default_objects()
+            
+        # Add dynamic obstacles if requested
+        if add_dynamic_obstacles:
+            self.add_dynamic_obstacles()
             
         # Initialize SDF model
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.sdf_model = RobotSDF(device=self.device)
         
         # Set initial joint positions
-        self.initial_joint_positions = [0, -0.5, -0.5, 0, 0.95, 0]  # Modified from all zeros
+        self.initial_joint_positions = [0, -0.5, -0.5, 0, 0.95, 0]
         
         # Reset joints to initial positions
         for i in range(6):
             p.resetJointState(
                 self.robot_id,
-                i+1,  # Joint indices start from 1
+                i+1,
                 self.initial_joint_positions[i]
             )
-    
+
+        self.debug_ids = None  # Single ID for all debug points
+
     def add_default_objects(self):
         """Add default obstacles to the environment"""
         # Load bookshelf
         bookshelf_id = p.loadURDF(
             "obst_urdf/bookshelf.urdf",
-            basePosition=[0.05, 0.2, 0.625],
+            basePosition=[0.05, 0.25, 0.625],
             baseOrientation=p.getQuaternionFromEuler([0, 0, np.pi]),
             globalScaling=0.4
         )
@@ -62,8 +74,154 @@ class XArmEnvironment:
         self.objects.append(obj_id)
         return obj_id
 
-    def get_point_cloud(self, width=320, height=240, downsample=True, min_height=0.6):
-        """Get filtered point cloud of the environment"""
+    def add_dynamic_obstacles(self, num_obstacles=3):
+        """Add dynamic spherical obstacles with different motion patterns"""
+        visual_shape_id = p.createVisualShape(
+            shapeType=p.GEOM_SPHERE,
+            radius=0.04,
+            rgbaColor=[1, 0, 0, 0.7]  # Red, semi-transparent
+        )
+        
+        # collision_shape_id = p.createCollisionShape(
+        #     shapeType=p.GEOM_SPHERE,
+        #     radius=0.03
+        # )
+        
+        # Vertical moving obstacle
+        obstacle_id = p.createMultiBody(
+            baseMass=0,  # Mass of 0 makes it kinematic (not affected by physics)
+            #baseCollisionShapeIndex=collision_shape_id,
+            baseVisualShapeIndex=visual_shape_id,
+            basePosition=[0.2, -0.1, 1.1],  # Start at middle height
+        )
+        
+        self.dynamic_obstacles.append({
+            'id': obstacle_id,
+            'type': 'vertical',
+            'center': [0.2, -0.1, 1.1],  # Middle position
+            'amplitude': 0.4,  # +/- 0.3m from center
+            'frequency': 0.4,  # Oscillation frequency
+            'phase': 0.0,      # Time tracking
+        })
+        
+        # Horizontal moving obstacle
+        obstacle_id = p.createMultiBody(
+            baseMass=0,  # Mass of 0 makes it kinematic
+            #baseCollisionShapeIndex=collision_shape_id,
+            baseVisualShapeIndex=visual_shape_id,
+            basePosition=[0.0, -0.3, 1.2],  # Start at middle of horizontal path
+        )
+        
+        self.dynamic_obstacles.append({
+            'id': obstacle_id,
+            'type': 'horizontal',
+            'center': [0.0, -0.3, 1.2],  # Fixed y and z
+            'amplitude': 0.5,  # +/- 0.3m in x direction
+            'frequency': 0.4,  # Oscillation frequency
+            'phase': 0.0,      # Time tracking
+        })
+        
+        # Figure-8 moving obstacle
+        x = -0.1  # Starting x position
+        y = -0.3   # Different y positions
+        z = 0.8  # Fixed height
+        
+        obstacle_id = p.createMultiBody(
+            baseMass=0,  # Mass of 0 makes it kinematic
+            #baseCollisionShapeIndex=collision_shape_id,
+            baseVisualShapeIndex=visual_shape_id,
+            basePosition=[x, y, z],
+        )
+        
+        self.dynamic_obstacles.append({
+            'id': obstacle_id,
+            'type': 'figure8',
+            'center': [x, y, z],
+            'amplitude': 0.2,  # Size of figure-8
+            'frequency': 0.3,  # Speed of motion
+            'phase': 0.0,  # Phase offset
+        })
+
+    def update_dynamic_obstacles(self, dt):
+        """Update positions of dynamic obstacles"""
+        for obstacle in self.dynamic_obstacles:
+            if obstacle['type'] == 'vertical':
+                # Update phase
+                obstacle['phase'] += dt * obstacle['frequency']
+                
+                # Vertical sinusoidal motion
+                new_z = obstacle['center'][2] + obstacle['amplitude'] * np.sin(2 * np.pi * obstacle['phase'])
+                new_pos = [
+                    obstacle['center'][0],
+                    obstacle['center'][1],
+                    new_z
+                ]
+                
+                # Set vertical velocity
+                vz = obstacle['amplitude'] * 2 * np.pi * obstacle['frequency'] * np.cos(2 * np.pi * obstacle['phase'])
+                velocity = [0, 0, vz]
+                
+            elif obstacle['type'] == 'horizontal':
+                # Update phase
+                obstacle['phase'] += dt * obstacle['frequency']
+                
+                # Horizontal sinusoidal motion
+                new_x = obstacle['center'][0] + obstacle['amplitude'] * np.sin(2 * np.pi * obstacle['phase'])
+                new_pos = [
+                    new_x,
+                    obstacle['center'][1],
+                    obstacle['center'][2]
+                ]
+                
+                # Set horizontal velocity
+                vx = obstacle['amplitude'] * 2 * np.pi * obstacle['frequency'] * np.cos(2 * np.pi * obstacle['phase'])
+                velocity = [vx, 0, 0]
+                
+            elif obstacle['type'] == 'figure8':
+                # Update phase
+                obstacle['phase'] += dt * obstacle['frequency']
+                
+                # Figure-8 pattern (lemniscate of Bernoulli)
+                a = obstacle['amplitude']
+                t = 2 * np.pi * obstacle['phase']
+                
+                # Figure-8 coordinates relative to center
+                dx = a * np.cos(t) / (1 + np.sin(t)**2)
+                dy = a * np.sin(t) * np.cos(t) / (1 + np.sin(t)**2)
+                
+                new_pos = [
+                    obstacle['center'][0] + dx,
+                    obstacle['center'][1] + dy,
+                    obstacle['center'][2]
+                ]
+                
+                # Calculate velocities (derivatives of position)
+                vx = -a * (2 * np.sin(t)**3 - np.sin(t)) / (1 + np.sin(t)**2)**2
+                vy = a * np.cos(t) * (2 * np.sin(t)**2 - 1) / (1 + np.sin(t)**2)**2
+                velocity = [
+                    vx * 2 * np.pi * obstacle['frequency'],
+                    vy * 2 * np.pi * obstacle['frequency'],
+                    0
+                ]
+            
+            # Update position and velocity
+            p.resetBasePositionAndOrientation(
+                obstacle['id'],
+                new_pos,
+                p.getQuaternionFromEuler([0, 0, 0])
+            )
+            
+            p.resetBaseVelocity(
+                obstacle['id'],
+                linearVelocity=velocity,
+                angularVelocity=[0, 0, 0]
+            )
+
+    def get_static_point_cloud(self, width=320, height=240, downsample=True, min_height=0.6):
+        """Get filtered point cloud of static environment (cached)"""
+        if self.cached_static_points is not None:
+            return self.cached_static_points
+
         p.removeAllUserDebugItems()
         
         # Camera setup
@@ -149,7 +307,106 @@ class XArmEnvironment:
         # for point in points_world:  # Still visualize in world frame
         #     p.addUserDebugPoints([point], [[1, 0, 0]], pointSize=3)
         
-        return torch.tensor(points_robot, device=self.device).unsqueeze(0)
+        # Cache the processed point cloud
+        self.cached_static_points = torch.tensor(points_robot, device=self.device).unsqueeze(0)
+        return self.cached_static_points
+
+    def get_dynamic_points(self):
+        """Get points representing dynamic obstacles in robot frame with their velocities"""
+        if not self.dynamic_obstacles:
+            return torch.zeros((0, 3), device=self.device), torch.zeros((0, 3), device=self.device)
+
+        dynamic_points = []
+        dynamic_velocities = []
+        for obstacle in self.dynamic_obstacles:
+            pos, _ = p.getBasePositionAndOrientation(obstacle['id'])
+            lin_vel, _ = p.getBaseVelocity(obstacle['id'])
+            
+            # Generate points on sphere surface using spherical coordinates
+            radius = 0.05  # sphere radius
+            num_phi = 2     # number of vertical divisions
+            num_theta = 2   # number of horizontal divisions
+            
+            for i in range(num_phi):
+                phi = np.pi * (i + 1) / (num_phi + 1)
+                for j in range(num_theta):
+                    theta = 2 * np.pi * j / num_theta
+                    
+                    # Convert spherical to Cartesian coordinates
+                    x = pos[0] + radius * np.sin(phi) * np.cos(theta)
+                    y = pos[1] + radius * np.sin(phi) * np.sin(theta)
+                    z = pos[2] + radius * np.cos(phi)
+                    
+                    dynamic_points.append(np.array([x, y, z]))
+                    dynamic_velocities.append(np.array(lin_vel))  # Each point gets obstacle's velocity
+        
+        dynamic_points = np.array(dynamic_points)
+        dynamic_velocities = np.array(dynamic_velocities)
+        
+        # Transform points and velocities to robot frame
+        robot_pos, robot_orn = p.getBasePositionAndOrientation(self.robot_id)
+        robot_mat = np.array(p.getMatrixFromQuaternion(robot_orn)).reshape(3, 3)
+        dynamic_points_robot = (dynamic_points - robot_pos) @ robot_mat.T
+        dynamic_velocities_robot = dynamic_velocities @ robot_mat.T  # Only rotate velocities, no translation
+        
+        return (torch.tensor(dynamic_points_robot, device=self.device), 
+                torch.tensor(dynamic_velocities_robot, device=self.device))
+
+    def get_full_point_cloud(self):
+        """Get combined static and dynamic point cloud with velocities"""
+        # Remove previous visualization
+        if self.debug_ids is not None:
+            p.removeUserDebugItem(self.debug_ids)
+        
+        # Get static points (cached)
+        static_points = self.get_static_point_cloud()
+        # Create zero velocities for static points
+        static_velocities = torch.zeros_like(static_points)
+        
+        # Get dynamic points and their velocities
+        dynamic_points, dynamic_velocities = self.get_dynamic_points()
+        
+        # Combine points and velocities
+        if dynamic_points.shape[0] > 0:
+            if static_points.shape[1] > 0:
+                combined_points = torch.cat([
+                    static_points.squeeze(0),
+                    dynamic_points
+                ], dim=0)
+                combined_velocities = torch.cat([
+                    static_velocities.squeeze(0),
+                    dynamic_velocities
+                ], dim=0)
+            else:
+                combined_points = dynamic_points
+                combined_velocities = dynamic_velocities
+        else:
+            combined_points = static_points.squeeze(0)
+            combined_velocities = static_velocities.squeeze(0)
+        
+        # Visualize points if requested
+        p.removeAllUserDebugItems()  # Clear previous visualizations
+        
+        # # Convert points back to world frame for visualization
+        robot_pos, robot_orn = p.getBasePositionAndOrientation(self.robot_id)
+        robot_mat = np.array(p.getMatrixFromQuaternion(robot_orn)).reshape(3, 3)
+        
+        # # Visualize static points (blue)
+        # if static_points.shape[1] > 0:
+        #     static_world = (static_points.squeeze(0).cpu().numpy() @ robot_mat) + robot_pos
+        #     for point in static_world:
+        #         p.addUserDebugPoints([point], [[0, 0, 1]], pointSize=3)  # Blue
+        
+        # # Visualize dynamic points (red)
+        # if dynamic_points.shape[0] > 0:
+        #     dynamic_world = (dynamic_points.cpu().numpy() @ robot_mat) + robot_pos
+        #     self.debug_ids = p.addUserDebugPoints(
+        #         dynamic_world.tolist(),  # All points at once
+        #         [[1, 0, 0]] * len(dynamic_world),  # Red color for each point
+        #         pointSize=4
+        #     )
+        
+        return combined_points.unsqueeze(0), combined_velocities.unsqueeze(0)
 
     def downsample_point_cloud(self, points, voxel_size=0.03, target_points=500):
         """
@@ -196,16 +453,26 @@ class XArmEnvironment:
         
         return downsampled_points
 
+    def step(self):
+        """Step the simulation"""
+        self.update_dynamic_obstacles(1/240.0)
+        p.stepSimulation()
+
     def reset(self):
         """Reset environment to initial state"""
         for obj_id in self.objects:
             p.removeBody(obj_id)
         self.objects = []
         self.add_default_objects()
-
-    def step(self):
-        """Step the simulation"""
-        p.stepSimulation()
+        
+        # Reset dynamic obstacles
+        for obstacle in self.dynamic_obstacles:
+            p.removeBody(obstacle['id'])
+        self.dynamic_obstacles = []
+        self.add_dynamic_obstacles()
+        
+        # Clear cached point cloud
+        self.cached_static_points = None
 
     def close(self):
         """Disconnect from PyBullet"""
@@ -217,9 +484,9 @@ def main():
     try:
         while True:
             env.step()
-            points = env.get_point_cloud()
-            print(points.shape)
-            time.sleep(0.01)
+            points = env.get_full_point_cloud()
+            # print(points.shape)
+            time.sleep(0.01)  # Add small delay to see motion clearly
     finally:
         env.close()
 

@@ -1,11 +1,20 @@
 import numpy as np
 import torch
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 from scipy.spatial import cKDTree
 import time
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class PlanningMetrics:
+    success: bool
+    num_collision_checks: int
+    path_length: float
+    num_samples: int
+    planning_time: float
 
 class RRTBasePlanner:
     def __init__(self, 
@@ -28,6 +37,7 @@ class RRTBasePlanner:
         self.goal_bias = goal_bias
         self.safety_margin = safety_margin
         self.device = device
+        self.collision_check_count = 0
 
     def _get_uniform_random_configs(self, n_samples: int, rng=None) -> np.ndarray:
         """Generate batch of random configurations"""
@@ -37,6 +47,7 @@ class RRTBasePlanner:
 
     def _check_collision_batch(self, configs: np.ndarray, obstacle_points: Optional[torch.Tensor] = None) -> np.ndarray:
         """Check collision for batch of configurations using RobotSDF"""
+        self.collision_check_count += len(configs)  # Count each config in batch
         configs_tensor = torch.tensor(configs, device=self.device)
         
         # Get SDF values for all configurations
@@ -51,6 +62,10 @@ class RRTBasePlanner:
                 joint_angles=configs_tensor,  # [B, 6]
                 return_gradients=False
             )
+            print(f"SDF values shape: {sdf_values.shape}")
+            print(f"SDF min value: {sdf_values.min().item():.6f}")
+            print(f"SDF max value: {sdf_values.max().item():.6f}")
+            print(f"SDF mean value: {sdf_values.mean().item():.6f}")
             # Configuration is valid if minimum SDF value is above safety margin
             min_sdf_values = sdf_values.min(dim=1)[0]  # Get minimum across all points
             return min_sdf_values > self.safety_margin
@@ -81,12 +96,23 @@ class RRTBasePlanner:
 
 class RRTPlanner(RRTBasePlanner):
     def plan(self, start_config: np.ndarray, goal_config: np.ndarray,
-            obstacle_points: Optional[torch.Tensor] = None, rng=None) -> List[np.ndarray]:
-        """Plan path using standard RRT"""
+            obstacle_points: Optional[torch.Tensor] = None, 
+            return_metrics: bool = False,
+            rng: Optional[np.random.RandomState] = None) -> Union[List[np.ndarray], PlanningMetrics]:
+        """Plan path using standard RRT
+        
+        Args:
+            start_config: Starting joint configuration
+            goal_config: Goal joint configuration
+            obstacle_points: Point cloud of obstacles
+            return_metrics: Whether to return metrics instead of path
+            rng: Random number generator for reproducibility
+        """
         if rng is None:
             rng = np.random.default_rng()
 
         start_time = time.time()
+        self.collision_check_count = 0  # Reset counter
         print("\nStarting RRT planning...")
         
         # Initialize tree with start configuration
@@ -138,6 +164,15 @@ class RRTPlanner(RRTBasePlanner):
                         print(f"Time: {elapsed_time:.2f}s")
                         print(f"Tree size: {len(tree)} nodes")
                         print(f"Path length: {len(path)} waypoints")
+                        if path:  # If planning succeeded
+                            metrics = PlanningMetrics(
+                                success=True,
+                                num_collision_checks=self.collision_check_count,
+                                path_length=np.sum([np.linalg.norm(path[i+1] - path[i]) for i in range(len(path)-1)]),
+                                num_samples=attempts * self.batch_size,
+                                planning_time=time.time() - start_time
+                            )
+                            return metrics if return_metrics else path
                         return path
             
             # Update KD-tree

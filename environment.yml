@@ -1,4 +1,4 @@
-name: arm_cdf_planning
+name: cdf_bubble_planning_control
 channels:
   - pytorch
   - nvidia
@@ -230,4 +230,4 @@ dependencies:
       - trimesh==4.5.1
       - virtualenv==20.27.1
       - websockets==13.1
-prefix: /home/kehan/miniconda3/envs/arm_cdf_planning
+prefix: /home/kehan/miniconda3/envs/cdf_bubble_planning_control
