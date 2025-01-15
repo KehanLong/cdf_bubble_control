@@ -56,7 +56,7 @@ class PlanningMetrics:
     planning_time: float
 
 class XArmSDFVisualizer:
-    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='bubble_cdf', seed=5):
+    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='bubble_cdf', seed=5, dynamic_obstacles=False):
         """
         Initialize XArmSDFVisualizer
         
@@ -78,7 +78,7 @@ class XArmSDFVisualizer:
         self.seed = seed
         
         # Initialize environment
-        self.env = XArmEnvironment(gui=use_gui, add_dynamic_obstacles=False)
+        self.env = XArmEnvironment(gui=use_gui, add_dynamic_obstacles=dynamic_obstacles)
         self.physics_client = self.env.client
         self.robot_id = self.env.robot_id
         self.use_gui = use_gui
@@ -257,7 +257,6 @@ class XArmSDFVisualizer:
             threshold: Distance threshold for considering a configuration valid
             seed: Random seed for reproducibility
         """
-        from utils.find_goal_pose import find_goal_configuration
         
         print(f"\nSearching for goal configurations:")
         print(f"Target position: {goal_pos.cpu().numpy()}")

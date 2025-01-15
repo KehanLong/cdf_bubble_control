@@ -36,9 +36,9 @@ class XArmController:
         self.pd_controller = PDController(kp=0.8, kd=0.1, max_velocity=self.max_velocity)
         self.clf_cbf_controller = ClfCbfQpController(
             p1=1e0,    # Control effort penalty
-            p2=1e3,    # CLF slack variable penalty
+            p2=1e2,    # CLF slack variable penalty
             clf_rate=1.0,
-            cbf_rate=0.5,
+            cbf_rate=self.cbf_rate,
             safety_margin=0.2
         )
         # Add DR-CLF-CBF controller
@@ -360,7 +360,7 @@ if __name__ == "__main__":
     
     if trajectory_whole is not None:
         # Initialize controller 
-        planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type)
+        planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
         controller = XArmController(planner, control_type='clf_dro_cbf')     # baselines: 'pd', 'clf_cbf' 
         
         if planner_type == 'bubble_cdf':

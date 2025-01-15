@@ -7,6 +7,7 @@ from pathlib import Path
 from network import CDFNetwork
 from losses import compute_total_loss
 import time
+from torch.utils.data import TensorDataset, DataLoader
 
 # Add project root to Python path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -91,7 +92,7 @@ class CDFTrainer:
         self.q_min = self.robot_fk.joint_limits[:, 0]
         
         self.device = device
-        self.batch_x = 10
+        self.batch_x = 200
         self.batch_q = 100
         self.max_q_per_link = 100
 
@@ -163,8 +164,8 @@ def train_cdf_network(
         print(f"Loading pretrained model from: {pretrained_model}")
         model.load_state_dict(torch.load(pretrained_model))
         # Create new filenames for continued training
-        model_filename = f'best_model_bfgs_{activation}_continued.pth'
-        final_model_filename = f'final_model_bfgs_{activation}_continued.pth'
+        model_filename = f'best_model_bfgs_{activation}_2.pth'
+        final_model_filename = f'final_model_bfgs_{activation}_2.pth'
     else:
         model_filename = f'best_model_bfgs_{activation}.pth'
         final_model_filename = f'final_model_bfgs_{activation}_final.pth'
@@ -175,10 +176,10 @@ def train_cdf_network(
         threshold=0.01, verbose=True
     )
     
+    
     # Training loop
     best_loss = float('inf')
     best_model_state = None
-    
     print("\nStarting training...")
     for epoch in range(num_epochs):
         start_time = time.time()
@@ -251,13 +252,13 @@ if __name__ == "__main__":
     model_save_dir = "trained_models/cdf"
 
 
-    pretrained_model = "trained_models/cdf/best_model_bfgs_gelu.pth"
+    pretrained_model = "trained_models/cdf/final_model_bfgs_gelu_continued.pth"
     
     model, final_loss = train_cdf_network(
         contact_db_path=contact_db_path,
         model_save_dir=model_save_dir,
-        num_epochs=4000,
-        learning_rate=0.001,  
+        num_epochs=400,
+        learning_rate=0.002,  
         device='cuda',
         loss_threshold=1e-4,
         activation='gelu',
