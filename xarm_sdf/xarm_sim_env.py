@@ -92,15 +92,15 @@ class XArmEnvironment:
             baseMass=0,  # Mass of 0 makes it kinematic (not affected by physics)
             #baseCollisionShapeIndex=collision_shape_id,
             baseVisualShapeIndex=visual_shape_id,
-            basePosition=[0.2, -0.1, 1.1],  # Start at middle height
+            basePosition=[0.1, -0.1, 1.1],  # Start at middle height
         )
         
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'vertical',
-            'center': [0.2, -0.1, 1.1],  # Middle position
+            'center': [0.1, -0.1, 1.1],  # Middle position
             'amplitude': 0.4,  # +/- 0.3m from center
-            'frequency': 0.4,  # Oscillation frequency
+            'frequency': 0.2,  # Oscillation frequency
             'phase': 0.0,      # Time tracking
         })
         
@@ -117,7 +117,7 @@ class XArmEnvironment:
             'type': 'horizontal',
             'center': [0.0, -0.3, 1.2],  # Fixed y and z
             'amplitude': 0.5,  # +/- 0.3m in x direction
-            'frequency': 0.4,  # Oscillation frequency
+            'frequency': 0.2,  # Oscillation frequency
             'phase': 0.0,      # Time tracking
         })
         
@@ -353,60 +353,25 @@ class XArmEnvironment:
                 torch.tensor(dynamic_velocities_robot, device=self.device))
 
     def get_full_point_cloud(self):
-        """Get combined static and dynamic point cloud with velocities"""
-        # Remove previous visualization
-        if self.debug_ids is not None:
-            p.removeUserDebugItem(self.debug_ids)
-        
+        """Get static and dynamic point clouds with velocities"""
         # Get static points (cached)
         static_points = self.get_static_point_cloud()
-        # Create zero velocities for static points
+        # Static points have zero velocities
         static_velocities = torch.zeros_like(static_points)
         
         # Get dynamic points and their velocities
         dynamic_points, dynamic_velocities = self.get_dynamic_points()
         
-        # Combine points and velocities
-        if dynamic_points.shape[0] > 0:
-            if static_points.shape[1] > 0:
-                combined_points = torch.cat([
-                    static_points.squeeze(0),
-                    dynamic_points
-                ], dim=0)
-                combined_velocities = torch.cat([
-                    static_velocities.squeeze(0),
-                    dynamic_velocities
-                ], dim=0)
-            else:
-                combined_points = dynamic_points
-                combined_velocities = dynamic_velocities
-        else:
-            combined_points = static_points.squeeze(0)
-            combined_velocities = static_velocities.squeeze(0)
-        
-        # Visualize points if requested
-        p.removeAllUserDebugItems()  # Clear previous visualizations
-        
-        # # Convert points back to world frame for visualization
-        robot_pos, robot_orn = p.getBasePositionAndOrientation(self.robot_id)
-        robot_mat = np.array(p.getMatrixFromQuaternion(robot_orn)).reshape(3, 3)
-        
-        # # Visualize static points (blue)
-        # if static_points.shape[1] > 0:
-        #     static_world = (static_points.squeeze(0).cpu().numpy() @ robot_mat) + robot_pos
-        #     for point in static_world:
-        #         p.addUserDebugPoints([point], [[0, 0, 1]], pointSize=3)  # Blue
-        
-        # # Visualize dynamic points (red)
-        # if dynamic_points.shape[0] > 0:
-        #     dynamic_world = (dynamic_points.cpu().numpy() @ robot_mat) + robot_pos
-        #     self.debug_ids = p.addUserDebugPoints(
-        #         dynamic_world.tolist(),  # All points at once
-        #         [[1, 0, 0]] * len(dynamic_world),  # Red color for each point
-        #         pointSize=4
-        #     )
-        
-        return combined_points.unsqueeze(0), combined_velocities.unsqueeze(0)
+        return {
+            'static': {
+                'points': static_points.squeeze(0),
+                'velocities': static_velocities.squeeze(0)
+            },
+            'dynamic': {
+                'points': dynamic_points,
+                'velocities': dynamic_velocities
+            }
+        }
 
     def downsample_point_cloud(self, points, voxel_size=0.03, target_points=500):
         """

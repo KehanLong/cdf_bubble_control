@@ -29,6 +29,8 @@ class XArmController:
         self.max_velocity = 2.0  # Matches test case
 
         self.num_samples = 10
+
+        self.cbf_rate = 2.0
         
         # Initialize controllers
         self.pd_controller = PDController(kp=0.8, kd=0.1, max_velocity=self.max_velocity)
@@ -44,7 +46,7 @@ class XArmController:
             p1=1e0,    # Control effort penalty
             p2=1e2,    # CLF slack variable penalty
             clf_rate=1.0,
-            cbf_rate=0.5,
+            cbf_rate=self.cbf_rate,
             wasserstein_r=0.01,
             epsilon=0.1,
             num_samples=self.num_samples  # Number of CBF samples to use
@@ -110,55 +112,83 @@ class XArmController:
             velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
         elif self.control_type == 'clf_dro_cbf':
-            # Ensure we need gradients
             current_joints.requires_grad_(True)
             
-            # Get full point cloud including dynamic obstacles and their velocities
-            full_points, point_velocities = self.env.get_full_point_cloud()
-            full_points.requires_grad_(True)
+            # Get point clouds
+            point_data = self.env.get_full_point_cloud()
+            static_points = point_data['static']['points']
+            dynamic_points = point_data['dynamic']['points']
+            dynamic_velocities = point_data['dynamic']['velocities']
             
-            # Get SDF values for multiple points
+            # Combine all points for CDF query
+            all_points = torch.cat([static_points, dynamic_points], dim=0).unsqueeze(0)
+            all_points.requires_grad_(True)
+            
+            # Get CDF values for all points
             h_values = self.planner.robot_cdf.query_cdf(
-                points=full_points,
+                points=all_points,
                 joint_angles=current_joints.unsqueeze(0),
                 return_gradients=False
             )
-
-            print('cdf value:', h_values.min().item())
             
-            # Get the k smallest SDF values and their indices
-            k = self.num_samples
-            h_values_flat = h_values.flatten()
-            top_k_values, top_k_indices = torch.topk(h_values_flat, k, largest=False)
-            h_samples = top_k_values
             
-            # Initialize storage for gradients and dh_dt values
-            h_grads = []  # For dh_dtheta
-            dh_dt_samples = []  # For dh_dt
+            # Create combined_h = h + dh/dt for ranking
+            combined_h = h_values[0].detach().clone() * self.cbf_rate  # Detach to prevent gradient accumulation
             
-            # Compute gradients and dh_dt for each of the k smallest values
-            for idx, h_val in zip(top_k_indices, h_samples):
-                # Compute dh_dp
-                h_val.backward(retain_graph=True)
-                dh_dp = full_points.grad[0, idx].clone()  # Shape: (3,)
-
-                full_points.grad.zero_()
+            # Compute dh/dt for dynamic obstacles and add to combined_h
+            num_static = static_points.shape[0]
+            for idx in range(num_static, all_points.shape[1]):
+                h_val = h_values[0, idx]  # Use original h_values
                 
-                # Compute dh_dtheta
+                # Compute dh/dt
+                h_val.backward(retain_graph=True)
+                dh_dp = all_points.grad[0, idx].clone()
+                all_points.grad.zero_()
+                current_joints.grad.zero_()  # Also clear joint grads
+                
+                dyn_idx = idx - num_static
+                dp_dt = dynamic_velocities[dyn_idx].to(torch.float64)
+                dh_dt = torch.dot(dh_dp, dp_dt).item()
+                
+                # Add dh/dt to combined_h
+                combined_h[idx] += dh_dt
+            
+            # Get the k smallest values based on combined_h
+            k = self.num_samples
+            top_k_values, top_k_indices = torch.topk(combined_h, k, largest=False)
+            
+            # Now compute gradients and collect samples for selected points
+            h_grads = []
+            h_samples = []
+            dh_dt_samples = []
+            
+            for idx in top_k_indices:
+                h_val = h_values[0, idx]  # Get original h_value
+                
+                # First compute dh/dp for dh/dt
+                h_val.backward(retain_graph=True)
+                dh_dp = all_points.grad[0, idx].clone()
+                all_points.grad.zero_()
+                
+                # Then compute dh/dtheta
                 h_val.backward(retain_graph=True)
                 h_grads.append(current_joints.grad.clone().cpu().numpy())
                 current_joints.grad.zero_()
                 
-                # Get point velocity (dp_dt)
-                dp_dt = point_velocities[0, idx]  # Shape: (3,)
+                h_samples.append(h_val.item())
                 
-                # Compute dh_dt using chain rule
+                # Compute dh/dt
+                if idx < static_points.shape[0]:
+                    dp_dt = torch.zeros(3, dtype=torch.float64, device=self.device)
+                else:
+                    dyn_idx = idx - static_points.shape[0]
+                    dp_dt = dynamic_velocities[dyn_idx].to(torch.float64)
+                
                 dh_dt = torch.dot(dh_dp, dp_dt).item()
-
                 dh_dt_samples.append(dh_dt)
             
             # Convert to numpy arrays
-            h_samples_np = h_samples.detach().cpu().numpy()
+            h_samples_np = np.array(h_samples)
             h_grads_np = np.stack(h_grads)
             dh_dt_samples_np = np.array(dh_dt_samples)
             
@@ -281,7 +311,7 @@ class XArmController:
             step += 1
             
             # Break if we're close to the end of the trajectory
-            if s > 0.99 and goal_dist < 0.08:
+            if s > 0.99 and goal_dist < 0.05:
                 break
 
             time.sleep(dt)
