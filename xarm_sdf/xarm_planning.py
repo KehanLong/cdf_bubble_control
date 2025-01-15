@@ -56,9 +56,29 @@ class PlanningMetrics:
     planning_time: float
 
 class XArmSDFVisualizer:
-    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='mppi'):
+    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='bubble_cdf', seed=5):
+        """
+        Initialize XArmSDFVisualizer
+        
+        Args:
+            ee_goal: End-effector goal position
+            use_gui: Whether to use GUI visualization
+            initial_horizon: Initial horizon for MPPI
+            planner_type: Type of planner to use ('bubble_cdf', 'rrt', 'rrt_connect', 'mppi')
+            seed: Random seed for reproducibility
+        """
+        # Set random seeds first
+        print(f"\nInitializing with random seed: {seed}")
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+        
+        # Store seed for later use in planning
+        self.seed = seed
+        
         # Initialize environment
-        self.env = XArmEnvironment(gui=use_gui)
+        self.env = XArmEnvironment(gui=use_gui, add_dynamic_obstacles=False)
         self.physics_client = self.env.client
         self.robot_id = self.env.robot_id
         self.use_gui = use_gui
@@ -88,16 +108,17 @@ class XArmSDFVisualizer:
                 initial_horizon=self.initial_horizon
             )
         elif planner_type == 'rrt':
-            # Initialize OMPL RRT planner instead of custom RRT
+            # Initialize OMPL RRT planner with seed
             joint_limits = (
                 self.robot_fk.joint_limits[:, 0].cpu().numpy(),
                 self.robot_fk.joint_limits[:, 1].cpu().numpy()
             )
             self.rrt_planner = OMPLRRTPlanner(
-                robot_sdf=self.robot_sdf,     #or robot_cdf
+                robot_sdf=self.robot_sdf,
                 robot_fk=self.robot_fk,
                 joint_limits=joint_limits,
-                device=self.device
+                device=self.device,
+                seed=seed  # Pass seed to planner
             )
         elif planner_type == 'rrt_connect':
             # Initialize RRT-Connect planner
@@ -116,15 +137,15 @@ class XArmSDFVisualizer:
                 device=self.device
             )
         elif planner_type == 'bubble_cdf':
-            # Initialize Bubble Planner
+            # Initialize Bubble Planner with seed
             self.bubble_planner = BubblePlanner(
                 robot_cdf=self.robot_cdf,
-                #robot_cdf=self.robot_sdf,   # test with sdf
                 joint_limits=(
                     self.robot_fk.joint_limits[:, 0].cpu().numpy(),
                     self.robot_fk.joint_limits[:, 1].cpu().numpy()
                 ),
-                device=self.device
+                device=self.device,
+                seed=seed  # Pass seed to planner
             )
         else:
             raise ValueError(f"Unknown planner type: {planner_type}")
@@ -226,12 +247,21 @@ class XArmSDFVisualizer:
             [0, 0, 0, 1]
         )
 
-    def _find_goal_configuration(self, goal_pos: torch.Tensor, n_samples: int = 1e6, threshold: float = 0.05) -> Optional[np.ndarray]:
-        """Find valid goal configurations for a given goal position using random sampling"""
+    def _find_goal_configuration(self, goal_pos: torch.Tensor, n_samples: int = 1e6, threshold: float = 0.05, seed: int = None) -> Optional[np.ndarray]:
+        """
+        Find valid goal configurations for a given goal position using random sampling
+        
+        Args:
+            goal_pos: Target position in task space
+            n_samples: Number of samples to try
+            threshold: Distance threshold for considering a configuration valid
+            seed: Random seed for reproducibility
+        """
         from utils.find_goal_pose import find_goal_configuration
         
         print(f"\nSearching for goal configurations:")
         print(f"Target position: {goal_pos.cpu().numpy()}")
+        print(f"Using random seed: {seed}")
         
         valid_solutions = find_goal_configuration(
             goal_pos=goal_pos,
@@ -242,7 +272,8 @@ class XArmSDFVisualizer:
             n_samples=int(n_samples),
             threshold=threshold,
             device=self.device,
-            max_solutions=10  # Can be adjusted as needed
+            max_solutions=1,
+            seed=seed  # Pass the seed to find_goal_configuration
         )
         
         if not valid_solutions:
@@ -348,7 +379,7 @@ class XArmSDFVisualizer:
                 start_config=current_state.cpu().numpy(),
                 goal_config=goal_config,
                 obstacle_points=self.points_robot,  # Using only static points for planning
-                max_time=10.0
+                max_time=30.0
             )
             
             if result['metrics'].success == False:
@@ -371,15 +402,15 @@ class XArmSDFVisualizer:
                 return result['metrics']
             
             # Execute trajectory
-            traj_idx = 0
-            while step < time_steps and traj_idx < len(trajectory):
+            print(f"\nExecuting {len(trajectory)} waypoints...")
+            for traj_idx in range(len(trajectory)):
                 # Update robot state
-                next_config = trajectory[traj_idx]  # Now this will work as trajectory is an array
+                next_config = trajectory[traj_idx]
                 next_config_tensor = torch.tensor(next_config, device=self.device, dtype=torch.float32)
                 self.set_robot_configuration(next_config_tensor)
                 p.stepSimulation()
                 
-                # Record metrics with float32
+                # Record metrics
                 current_ee_pos = self.get_ee_position(next_config_tensor)
                 goal_dist = torch.norm(self.goal - current_ee_pos.squeeze())
                 goal_distances.append(goal_dist.detach().cpu().numpy())
@@ -394,17 +425,16 @@ class XArmSDFVisualizer:
                 
                 # Capture frame
                 if self.use_gui:
-                    frames.append(self._capture_frame(step, time_steps, width, height))
+                    frames.append(self._capture_frame(traj_idx, len(trajectory), width, height))
                     time.sleep(dt)
                 
-                if step % 10 == 0:
-                    print(f"Step {step}/{time_steps}")
+                if traj_idx % 10 == 0:
+                    print(f"Waypoint {traj_idx}/{len(trajectory)}")
                     print(f"Distance to goal: {goal_dist.item():.4f}")
                     print(f"Minimum SDF value: {min_sdf.item():.4f}")
                     print("---")
                 
                 step += 1
-                traj_idx += 1
                 torch.cuda.empty_cache()
                 
         elif self.planner_type == 'bubble_cdf':
@@ -565,8 +595,12 @@ class XArmSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage for comparison
-    goal_pos = torch.tensor([0.7, 0.2, 0.6], device='cuda')
-    visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble_cdf')  # baselines: 'rrt', 'rrt_connect', 'mppi'
+    goal_pos = torch.tensor([0.2, 0.6, 0.6], device='cuda')     
+
+    # example goal pos: [0.7, 0.2, 0.6],      
+
+    seed = 5
+    visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble_cdf', seed=seed)  # baselines: 'rrt', 'rrt_connect', 'mppi'
 
     # single demo
     visualizer.run_demo(execute_trajectory=True)  

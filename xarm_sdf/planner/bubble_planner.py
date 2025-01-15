@@ -27,10 +27,10 @@ class PlanningMetrics:
     planning_time: float
 
 class BubblePlanner:
-    def __init__(self, robot_cdf, joint_limits, device='cuda', random_seed=42):
+    def __init__(self, robot_cdf, joint_limits, device='cuda', seed=42):
         """Initialize the bubble planner using CDF for collision checking"""
-        self.random_seed = random_seed
-        np.random.seed(random_seed)
+        self.random_seed = seed
+        np.random.seed(seed)
         
         # Store robot info
         self.robot_cdf = robot_cdf
@@ -40,11 +40,10 @@ class BubblePlanner:
         # Planning parameters
         self.epsilon = 5E-2          # Bubble expansion parameter
         self.min_radius = 1E-2       # Minimum bubble radius
-        self.max_cdf = 1.0           # Maximum trusted CDF radius
+        # self.max_cdf = 1.0           
         self.num_samples = 5E4
         self.max_iterations = 5E4
-        self.step_size = 0.2
-        self.goal_bias = 0.1
+        self.goal_bias = 0.2
         self.cdf_query_count = 0
 
     def query_cdf(self, config: np.ndarray, obstacle_points: torch.Tensor) -> float:
@@ -69,7 +68,7 @@ class BubblePlanner:
         
         min_cdf = cdf_values.min().detach().cpu().numpy()   # 0.1 for safety
 
-        min_cdf = min(min_cdf, self.max_cdf)
+        #min_cdf = 2.0
 
         #print(f"Min CDF: {min_cdf}")
         
@@ -124,6 +123,7 @@ class BubblePlanner:
             #     max_retry=500,
             #     max_retry_epsilon=100,
             #     max_num_iterations=int(self.max_iterations),
+            #     prc = self.goal_bias,                # goal bias
             #     end_point=goal_config,
             #     rng=rng
             # )
@@ -137,9 +137,10 @@ class BubblePlanner:
                 self.joint_limits[0],
                 self.joint_limits[1],
                 start_point=start_config,
-                batch_size=100,
+                batch_size=10,
                 max_retry=500,
                 max_num_iterations=int(self.max_iterations),
+                prc = self.goal_bias,
                 end_point=goal_config,
                 rng=rng
             )

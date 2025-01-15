@@ -1,6 +1,7 @@
 try:
     from ompl import base as ob
     from ompl import geometric as og
+    from ompl import util as ou
 except ImportError:
     print("Warning: OMPL could not be imported. Some functionality may be limited.")
     
@@ -61,7 +62,7 @@ class ValidityCheckerWrapper:
         # print(f"SDF mean value: {sdf_values.mean().item():.6f}")
         
         is_valid = sdf_values.min().item() > 0.01
-        print(f"Checking config {config.cpu().numpy()[0]}, valid: {is_valid}")
+        #print(f"Checking config {config.cpu().numpy()[0]}, valid: {is_valid}")
         return is_valid
     
     def reset_count(self):
@@ -73,7 +74,8 @@ class OMPLRRTPlanner:
                  robot_fk,
                  joint_limits: tuple,
                  planner_type: str = 'rrt',
-                 device: str = 'cuda'):
+                 device: str = 'cuda',
+                 seed: int = None):
         """
         Initialize OMPL RRT planner
         
@@ -83,11 +85,17 @@ class OMPLRRTPlanner:
             joint_limits: Tuple of (lower_limits, upper_limits)
             planner_type: 'rrt', 'rrt_connect', or 'rrt_star'
             device: Computing device
+            seed: Random seed for reproducibility
         """
         self.robot_sdf = robot_sdf
         self.robot_fk = robot_fk
         self.device = device
         self.dof = len(joint_limits[0])
+        
+        # Set random seed if provided
+        if seed is not None:
+            print(f"Setting RRT random seed: {seed}")
+            ou.RNG.setSeed(seed)  # Set OMPL's random seed
         
         # Setup state space
         self.space = ob.RealVectorStateSpace(self.dof)
@@ -108,42 +116,43 @@ class OMPLRRTPlanner:
              start_config: np.ndarray,
              goal_config: np.ndarray,
              obstacle_points: torch.Tensor,
-             max_time: float = 5.0,
+             max_time: float = 30.0,
              return_metrics: bool = True) -> Dict[str, Any]:
         """
         Plan path using OMPL RRT
-        
-        Args:
-            start_config: Start configuration
-            goal_config: Goal configuration
-            obstacle_points: Point cloud of obstacles
-            max_time: Maximum planning time in seconds
-            return_metrics: Whether to return metrics
-            
-        Returns:
-            Dictionary containing path and metrics
         """
+        print("\nPlanning Debug Info:")
+        print(f"Start config: {start_config}")
+        print(f"Goal config: {goal_config}")
+        
         # Setup validity checker
         self.validity_checker = ValidityCheckerWrapper(self.robot_sdf, obstacle_points, self.device)
         self.si.setStateValidityChecker(ob.StateValidityCheckerFn(self.validity_checker))
+        self.si.setStateValidityCheckingResolution(0.001)
         self.si.setup()
         
         # Setup problem definition
         pdef = ob.ProblemDefinition(self.si)
         
-        # Set start and goal states
+        # Create start and goal states
         start = ob.State(self.space)
         goal = ob.State(self.space)
+        
+        # Set joint values
         for i in range(self.dof):
             start[i] = float(start_config[i])
             goal[i] = float(goal_config[i])
-        pdef.setStartAndGoalStates(start, goal)
+        
+        # Set start and goal states with threshold
+        goal_threshold = 0.1
+        print(f"Using goal threshold: {goal_threshold}")
+        pdef.setStartAndGoalStates(start, goal, goal_threshold)
         
         # Create and setup planner
         planner = og.RRT(self.si)
         planner.setRange(0.1)
-        
-
+        planner.setGoalBias(0.1)
+        print(f"RRT parameters - Step size: {planner.getRange()}, Goal bias: {planner.getGoalBias()}")
         
         planner.setProblemDefinition(pdef)
         planner.setup()
@@ -153,14 +162,29 @@ class OMPLRRTPlanner:
         solved = planner.solve(max_time)
         planning_time = time.time() - start_time
         
+        print(f"\nPlanning solved: {solved}")
+        
         # Extract solution and metrics
         if solved:
             # Get path
             path = pdef.getSolutionPath()
             waypoints = []
             for state in path.getStates():
-                waypoints.append([state[i] for i in range(self.dof)])
+                waypoint = [state[i] for i in range(self.dof)]
+                waypoints.append(waypoint)
             waypoints = np.array(waypoints)
+            
+            print(f"\nPath found with {len(waypoints)} waypoints")
+            print("First few waypoints:")
+            for i in range(min(3, len(waypoints))):
+                print(f"Waypoint {i}: {waypoints[i]}")
+            print("Last few waypoints:")
+            for i in range(max(0, len(waypoints)-2), len(waypoints)):
+                print(f"Waypoint {i}: {waypoints[i]}")
+            
+            # Check final waypoint distance to goal
+            final_dist = np.linalg.norm(waypoints[-1] - goal_config)
+            print(f"\nFinal waypoint distance to goal: {final_dist}")
             
             # Compute path length
             path_length = 0.0

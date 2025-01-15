@@ -23,7 +23,8 @@ def find_goal_configuration(
     sdf_margin: float = 0.02,
     cdf_margin: float = 0.10,
     device: str = 'cuda',
-    max_solutions: int = 10
+    max_solutions: int = 10,
+    seed: int = None
 ) -> List[Tuple[np.ndarray, float, float, float]]:
     """Find valid goal configurations for a given goal position using random sampling.
     
@@ -39,10 +40,19 @@ def find_goal_configuration(
         cdf_margin: Minimum acceptable CDF value for safety
         device: Device to use for computations ('cuda' or 'cpu')
         max_solutions: Maximum number of valid configurations to return
+        seed: Random seed for reproducibility
     
     Returns:
         List of tuples (config, distance, min_sdf, min_cdf) for all valid configurations found, sorted by distance
     """
+    # Set random seed if provided
+    if seed is not None:
+        print(f"Setting goal finding random seed: {seed}")
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+    
     # Initialize models if not provided
     if robot_fk is None:
         robot_fk = XArmFK(device=device)
