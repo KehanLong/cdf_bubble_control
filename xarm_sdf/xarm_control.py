@@ -361,7 +361,7 @@ if __name__ == "__main__":
     if trajectory_whole is not None:
         # Initialize controller 
         planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
-        controller = XArmController(planner, control_type='clf_dro_cbf')     # baselines: 'pd', 'clf_cbf' 
+        controller = XArmController(planner, control_type='clf_dro_cbf')     # options: 'pd', 'clf_cbf' , 'clf_dro_cbf'
         
         if planner_type == 'bubble_cdf':
             # For bubble_cdf planner, trajectory_whole is a dictionary

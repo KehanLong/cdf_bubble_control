@@ -111,26 +111,79 @@ def evaluate_sdf_cdf_correlation(device='cuda'):
             scene_contact.add_geometry(sphere_contact)
             scene_contact.show()
 
-def create_evaluation_dataset(batch_q_size=50, batch_x_size=100, device='cuda', save_path='data/cdf_data/evaluation_dataset.pt'):
+def create_evaluation_dataset(batch_q_size=200, batch_x_size=1000, device='cuda', 
+                            save_path='data/cdf_data/evaluation_dataset.pt', 
+                            mini_batch_size=100):
     """
-    Create and save a fixed evaluation dataset
+    Create evaluation dataset by processing mini-batches of points and configurations
+    
+    Args:
+        batch_q_size: Total number of configurations (200)
+        batch_x_size: Total number of points (1000)
+        mini_batch_size: Size of mini-batches to process at once
+        device: Computing device
+        save_path: Where to save the dataset
     """
     trainer = CDFTrainer("data/cdf_data/refined_bfgs_100_contact_db.npy", device=device)
-    trainer.batch_x = batch_x_size
-    trainer.batch_q = batch_q_size
     
-    # Sample points and configs
-    points, configs, gt_cdf_values = trainer.sample_batch()
+    # Sample all points at once
+    point_indices = torch.randint(0, len(trainer.valid_points), (batch_x_size,))
+    all_points = trainer.valid_points[point_indices]
+    
+    # Sample all configurations at once
+    all_configs = trainer.sample_q(batch_q=batch_q_size)
+    
+    # Initialize final CDF values tensor
+    final_cdf_values = torch.zeros(batch_x_size, batch_q_size)
+    
+    # Process in mini-batches
+    for i in range(0, batch_x_size, mini_batch_size):
+        for j in range(0, batch_q_size, mini_batch_size):
+            # Get current mini-batch indices
+            x_start, x_end = i, min(i + mini_batch_size, batch_x_size)
+            q_start, q_end = j, min(j + mini_batch_size, batch_q_size)
+
+            start_time = time.time()
+            
+            print(f"Processing batch: points [{x_start}:{x_end}], configs [{q_start}:{q_end}]")
+            
+            # Get mini-batch data
+            points_batch = all_points[x_start:x_end]
+            configs_batch = all_configs[q_start:q_end]
+            
+            # Get corresponding contact data
+            contact_configs_batch = [trainer.contact_configs[idx] for idx in point_indices[x_start:x_end]]
+            link_indices_batch = [trainer.link_indices[idx] for idx in point_indices[x_start:x_end]]
+            
+            # Compute CDF values for this mini-batch
+            cdf_values = compute_cdf_values(
+                points=points_batch,
+                configs=configs_batch,
+                contact_configs=contact_configs_batch,
+                link_indices=link_indices_batch,
+                device=device
+            )
+            
+            # Store in final tensor
+            final_cdf_values[x_start:x_end, q_start:q_end] = cdf_values.cpu()
+            
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+            
+            print(f"Completed {(x_end-x_start)*(q_end-q_start)} values in {time.time() - start_time:.2f} seconds")
     
     # Save dataset
     torch.save({
-        'points': points.cpu(),
-        'configs': configs.cpu(),
-        'gt_cdf_values': gt_cdf_values.cpu(),
+        'points': all_points.cpu(),
+        'configs': all_configs.cpu(),
+        'gt_cdf_values': final_cdf_values,
     }, save_path)
     
     print(f"Evaluation dataset saved to {save_path}")
-    return points, configs, gt_cdf_values
+    print(f"Final shapes - Points: {all_points.shape}, Configs: {all_configs.shape}, "
+          f"CDF Values: {final_cdf_values.shape}")
+    
+    return all_points, all_configs, final_cdf_values
 
 def evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt', device='cuda'):
     """
@@ -203,10 +256,10 @@ def evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt
 
 if __name__ == "__main__":
     # Create evaluation dataset (only need to run once)
-    # create_evaluation_dataset()
+    # create_evaluation_dataset(batch_q_size=200, batch_x_size=400, device='cuda', save_path='data/cdf_data/evaluation_dataset_large.pt')
     
     # Run evaluation
-    metrics = evaluate_quantitative()
+    metrics = evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt')
     
     # Qualitative evaluation (commented out by default)
     # evaluate_sdf_cdf_correlation()

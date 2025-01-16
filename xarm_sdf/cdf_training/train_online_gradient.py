@@ -2,10 +2,9 @@ import torch
 import torch.optim as optim
 import numpy as np
 import sys
-import random
 from pathlib import Path
 from network import CDFNetwork
-from losses import compute_total_loss
+import random
 import time
 
 # Add project root to Python path
@@ -13,6 +12,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from models.xarm_model import XArmFK
+from losses import compute_total_loss_with_gradients
 
 def set_random_seed(seed=42):
     """Set random seed for reproducibility"""
@@ -23,43 +23,50 @@ def set_random_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def compute_cdf_values(points, configs, contact_configs, link_indices, device='cuda'):
+def compute_cdf_and_gradients(points, configs, contact_configs, link_indices, device='cuda'):
     """
-    Compute ground truth CDF values for given points and configurations.
-    
-    Args:
-        points (torch.Tensor): (N, 3) tensor of points
-        configs (torch.Tensor): (M, 6) tensor of robot configurations
-        contact_configs (list): List of contact configurations for each point
-        link_indices (list): List of link indices for each point
-        device (str): Device to use for computation
-    
-    Returns:
-        torch.Tensor: (N, M) tensor of CDF values
+    Optimized computation of CDF values and gradients.
     """
     batch_x = len(points)
     batch_q = len(configs)
     cdf_values = torch.zeros(batch_x, batch_q, device=device)
+    cdf_gradients = torch.zeros(batch_x, batch_q, 6, device=device)
     
     for i in range(batch_x):
         contact_configs_i = torch.tensor(contact_configs[i], device=device)
         point_link_indices = torch.tensor(link_indices[i], device=device)
         
-        # For each sampled config, compute minimum distance to contact configs
+        # Compute all distances at once
         distances = torch.zeros(batch_q, len(contact_configs_i), device=device)
         for config_idx, link_idx in enumerate(point_link_indices):
-            # Only use joints up to the contact link
             relevant_joints = slice(0, link_idx + 1)
-            dist = torch.norm(
-                configs[:, relevant_joints] - contact_configs_i[config_idx, relevant_joints],
-                dim=1
-            )
-            distances[:, config_idx] = dist
+            diff = configs[:, relevant_joints].unsqueeze(1) - contact_configs_i[config_idx:config_idx+1, relevant_joints]
+            distances[:, config_idx] = torch.norm(diff.reshape(batch_q, -1), dim=1)
         
-        # CDF value is the minimum distance
-        cdf_values[i] = distances.min(dim=1)[0]
+        # Find minimum distances and corresponding indices
+        min_distances, min_indices = distances.min(dim=1)
+        cdf_values[i] = min_distances
+        
+        # Compute gradients for minimum configurations
+        for j in range(batch_q):
+            min_idx = min_indices[j]
+            min_link_idx = point_link_indices[min_idx]
+            
+            # Only compute gradient for relevant joints
+            diff = configs[j, :min_link_idx+1] - contact_configs_i[min_idx, :min_link_idx+1]
+            dist = min_distances[j]
+            
+            if dist > 0:  # Avoid division by zero
+                grad = torch.zeros(6, device=device)
+                grad[:min_link_idx+1] = diff / dist
+                cdf_gradients[i, j] = grad
     
-    return cdf_values
+    # Print gradient statistics
+    grad_norms = torch.norm(cdf_gradients, dim=2)  # [batch_x, batch_q]
+    # print(f"Gradient norms - Mean: {grad_norms.mean():.4f}, Max: {grad_norms.max():.4f}, Min: {grad_norms.min():.4f}")
+    
+    return cdf_values, cdf_gradients
+
 
 class CDFTrainer:
     def __init__(self, contact_db_path, device='cuda'):
@@ -91,7 +98,7 @@ class CDFTrainer:
         self.q_min = self.robot_fk.joint_limits[:, 0]
         
         self.device = device
-        self.batch_x = 200
+        self.batch_x = 100
         self.batch_q = 100
         self.max_q_per_link = 100
 
@@ -106,19 +113,15 @@ class CDFTrainer:
         return q_sampled
 
     def sample_batch(self):
-        """Sample batch of points and configs, compute CDF values online"""
-        # 1. Sample random points from valid points
+        """Sample batch and compute both CDF values and gradients"""
         point_indices = torch.randint(0, len(self.valid_points), (self.batch_x,))
         points = self.valid_points[point_indices]
-        
-        # 2. Sample random configurations
         configs = self.sample_q()
         
-        # 3. Compute CDF values using helper function
         contact_configs_batch = [self.contact_configs[idx] for idx in point_indices]
         link_indices_batch = [self.link_indices[idx] for idx in point_indices]
         
-        cdf_values = compute_cdf_values(
+        cdf_values, cdf_gradients = compute_cdf_and_gradients(
             points=points,
             configs=configs,
             contact_configs=contact_configs_batch,
@@ -126,7 +129,7 @@ class CDFTrainer:
             device=self.device
         )
         
-        return points, configs, cdf_values
+        return points, configs, cdf_values, cdf_gradients
 
 def train_cdf_network(
     contact_db_path,
@@ -180,34 +183,40 @@ def train_cdf_network(
     best_loss = float('inf')
     best_model_state = None
     print("\nStarting training...")
+    
+    # Training loop
     for epoch in range(num_epochs):
         start_time = time.time()
         model.train()
         
-        # Sample batch and compute CDF values
-        points, configs, cdf_values = trainer.sample_batch()
+        # Sample batch with gradients
+        points, configs, cdf_values, cdf_gradients = trainer.sample_batch()
         
-        # Prepare inputs (all combinations of points and configs)
+        # Prepare inputs
         points_exp = points.unsqueeze(1).expand(-1, trainer.batch_q, -1)
         configs_exp = configs.unsqueeze(0).expand(trainer.batch_x, -1, -1)
         
         inputs = torch.cat([
-            configs_exp.reshape(-1, 6),  # Configs first
-            points_exp.reshape(-1, 3)    # Points last
+            configs_exp.reshape(-1, 6),
+            points_exp.reshape(-1, 3)
         ], dim=1)
         
         targets = cdf_values.reshape(-1)
+        target_gradients = cdf_gradients.reshape(-1, 6)
         
-        # Forward pass and loss computation using helper
-        optimizer.zero_grad()
-        loss, mse_loss, eikonal_loss = compute_total_loss(
+        # Compute loss with gradients
+        loss, value_loss, gradient_loss, eikonal_loss = compute_total_loss_with_gradients(
             model=model,
             inputs=inputs,
             targets=targets,
-            eikonal_weight=0.04
+            target_gradients=target_gradients,
+            value_weight=1.0,
+            gradient_weight=0.05,
+            eikonal_weight=0.02
         )
         
-        # Backward pass
+        # Backward pass and optimization
+        optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         optimizer.step()
@@ -216,11 +225,12 @@ def train_cdf_network(
         scheduler.step(loss)
         
         # Print progress
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             epoch_time = time.time() - start_time
             print(f"Epoch [{epoch+1}/{num_epochs}] "
                   f"Loss: {loss.item():.6f} "
-                  f"MSE: {mse_loss.item():.6f} "
+                  f"Value: {value_loss.item():.6f} "
+                  f"Gradient: {gradient_loss.item():.6f} "
                   f"Eikonal: {eikonal_loss.item():.6f} "
                   f"Time: {epoch_time:.3f}s")
         
@@ -238,26 +248,23 @@ def train_cdf_network(
     torch.save(model.state_dict(), model_save_dir / final_model_filename)
     print(f"Final model saved as: {final_model_filename}")
     
-    # Load best model
-    model.load_state_dict(best_model_state)
+
     return model, best_loss
 
 if __name__ == "__main__":
-    # Set random seed for reproducibility
+
     set_random_seed(42)
-    
-    # Use relative paths from project root
+    # Example usage
     contact_db_path = "data/cdf_data/refined_bfgs_100_contact_db.npy"
     model_save_dir = "trained_models/cdf"
-
 
     pretrained_model = "trained_models/cdf/best_model_bfgs_gelu_2.pth"
     
     model, final_loss = train_cdf_network(
         contact_db_path=contact_db_path,
         model_save_dir=model_save_dir,
-        num_epochs=300,
-        learning_rate=0.002,  
+        num_epochs=400,
+        learning_rate=0.002,
         device='cuda',
         loss_threshold=1e-4,
         activation='gelu',
