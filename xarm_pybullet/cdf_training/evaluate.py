@@ -4,7 +4,7 @@ from pathlib import Path
 import trimesh
 import matplotlib.pyplot as plt
 import time
-
+import os
 # Add project root to path
 import sys
 project_root = Path(__file__).parent.parent
@@ -256,10 +256,15 @@ def evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt
 
 if __name__ == "__main__":
     # Create evaluation dataset (only need to run once)
-    # create_evaluation_dataset(batch_q_size=200, batch_x_size=400, device='cuda', save_path='data/cdf_data/evaluation_dataset_large.pt')
+
+    src_dir = project_root
+    
+    save_path = os.path.join(src_dir, 'data/cdf_data/evaluation_dataset_large.pt')
+    # create_evaluation_dataset(batch_q_size=200, batch_x_size=400, device='cuda', save_path=save_path)
     
     # Run evaluation
-    metrics = evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt')
+    eval_dataset_path = os.path.join(src_dir, 'data/cdf_data/evaluation_dataset.pt')
+    metrics = evaluate_quantitative(eval_dataset_path=eval_dataset_path)
     
     # Qualitative evaluation (commented out by default)
     # evaluate_sdf_cdf_correlation()

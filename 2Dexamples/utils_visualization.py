@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import imageio
 import os
+from typing import List
 
 from utils_env import plot_environment
 
@@ -95,4 +96,61 @@ def plot_path_comparison(planned_configs, tracked_configs, src_dir):
     plt.savefig(os.path.join(src_dir, 'figures/path_comparison.png'), dpi=300, bbox_inches='tight')
     print("Saved path comparison plot")
     plt.close()
+
+def create_animation(obstacles: List[np.ndarray], tracked_configs, reference_configs, 
+                    dt: float = 0.02, src_dir=None):
+    """
+    Create an animation of the robot arm tracking the planned path.
+    
+    Args:
+        obstacles: List of obstacle arrays
+        tracked_configs: Array of tracked configurations
+        reference_configs: Array of reference configurations
+        dt: Time step between frames (seconds)
+        src_dir: Source directory for saving the animation
+    """
+    # Calculate fps based on the timestep
+    fps = int(1/dt)
+    
+    n_configs = len(tracked_configs)
+    print(f"\nCreating animation for {n_configs} configurations (dt={dt}s, fps={fps})")
+    
+    # Create frames based on the number of configurations
+    frames = []
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    for i in range(n_configs):
+        ax.clear()
+        current_config = tracked_configs[i]
+        
+        # Plot the environment and current configuration
+        plot_environment(obstacles, current_config, ax=ax, robot_color='blue', label='Current')
+        
+        # Plot reference configuration
+        plot_environment(obstacles, reference_configs[i], ax=ax, robot_color='green', 
+                        plot_obstacles=False, label='Reference', robot_alpha=0.5)
+        
+        # Set consistent axis limits
+        ax.set_title(f'Frame {i}/{n_configs}')
+        ax.legend()
+        
+        # Convert plot to RGB array
+        fig.canvas.draw()
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
+        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        frames.append(image)
+    
+    plt.close(fig)
+    
+    if src_dir:
+        # Save animation
+        print("Saving animation...")
+        output_path = os.path.join(src_dir, 'figures/robot_animation.mp4')
+        imageio.mimsave(output_path, frames, fps=fps)
+        print(f"Animation saved as '{output_path}'")
+    
+    return frames
+
+
+
 

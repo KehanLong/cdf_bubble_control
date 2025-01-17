@@ -1,11 +1,10 @@
 import numpy as np
 from typing import List
-from utils_env import create_obstacles, plot_environment
-from utils_visualization import visualize_results, plot_path_comparison
+from utils_env import create_obstacles
+from utils_visualization import visualize_results, create_animation
 from cdf_evaluate import load_learned_cdf, cdf_evaluate_model
 import torch
 import matplotlib.pyplot as plt
-import imageio
 
 import sys
 import os
@@ -28,21 +27,6 @@ from utils_new import compute_robot_distances
 src_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-class CDF:
-    def __init__(self, weights_file, obstacles, device, truncation_value=0.3):
-        self.model = load_learned_cdf(weights_file)
-        self.model.to(device)
-        self.obstacle_points = concatenate_obstacle_list(obstacles)
-        self.device = device
-        self.truncation_value = truncation_value
-    
-    def __call__(self, configurations):
-        cdf_values = cdf_evaluate_model(self.model, configurations, self.obstacle_points, self.device)
-        min_cdfs = np.min(cdf_values, axis=1)
-        # Truncate values larger than truncation_value
-        return np.minimum(min_cdfs, self.truncation_value)
-
-
 def concatenate_obstacle_list(obstacle_list):
     """
     Concatenate a list of obstacle arrays into a single numpy array.
@@ -54,8 +38,6 @@ def concatenate_obstacle_list(obstacle_list):
     np.ndarray: A single numpy array of shape (N, 2) where N is the total number of points
     """
     return np.concatenate(obstacle_list, axis=0)
-
-    # plt.show()
 
 # a wrapper class for cdf model
 class RobotCDF:
@@ -91,25 +73,22 @@ class RobotCDF:
         
         return cdf_values
 
-def plan_and_visualize(cdf, obstacles, initial_config, goal_config):
+def plan_and_visualize(robot_cdf, obstacles, initial_config, goal_config):
     """Plan and visualize a path using the bubble planner"""
     print("\nStarting planning process...")
     # Set random seed for reproducibility
-    seed = 43
-    
-    # Create RobotCDF wrapper
-    robot_cdf = RobotCDF(cdf.model, cdf.device, cdf.truncation_value)
+    seed = 42
     
     # Initialize bubble planner
     joint_limits = (
         np.full_like(initial_config, -np.pi),  # lower bounds
         np.full_like(initial_config, np.pi)    # upper bounds
     )
-    planner = BubblePlanner(robot_cdf, joint_limits, device=cdf.device, seed=seed)
+    planner = BubblePlanner(robot_cdf, joint_limits, device=robot_cdf.device, seed=seed)
     
     # Get obstacle points
     obstacle_points = torch.tensor(concatenate_obstacle_list(obstacles), 
-                                 device=cdf.device)
+                                 device=robot_cdf.device)
     print(f"Obstacle points shape: {obstacle_points.shape}")
     
     # Plan path
@@ -134,10 +113,6 @@ def plan_and_visualize(cdf, obstacles, initial_config, goal_config):
     visualize_results(obstacles, initial_config, goal_config, 
                      trajectory, result['bezier_curves'], src_dir = src_dir)
     
-    # Create animation if trajectory exists
-    if trajectory is not None:
-        animate_path(obstacles, result, fps=10, duration=15.0, src_dir = src_dir)
-    
     return result
 
 
@@ -158,8 +133,8 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
         control_type: Controller type ('pd', 'clf_cbf', or 'clf_dro_cbf')
         use_bezier: Whether to use Bezier curves (True) or discrete waypoints (False)
     """
-    # Convert obstacles to JAX array first
-    obstacle_points = jnp.array(concatenate_obstacle_list(obstacles))
+    # Convert obstacles to JAX array with float32 dtype
+    obstacle_points = jnp.array(concatenate_obstacle_list(obstacles), dtype=jnp.float32)
     
     # Initialize appropriate controller based on type
     if control_type == 'pd':
@@ -236,13 +211,13 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
             )
         else:  # clf_cbf or clf_dro_cbf
             # Get all distances
-            distances = compute_distances(jnp.array(current_config), obstacle_points)
+            distances = compute_distances(jnp.array(current_config, dtype=jnp.float32), obstacle_points)
             
             if control_type == 'clf_cbf':
                 # Get minimum distance and its gradient
                 h = float(jnp.min(distances))
                 dh_dtheta = jax.grad(lambda q: jnp.min(compute_distances(q, obstacle_points)))(
-                    jnp.array(current_config)
+                    jnp.array(current_config, dtype=jnp.float32)  # Explicitly convert to float32
                 )
                 
                 u = controller.generate_controller(
@@ -303,68 +278,18 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
     
     return np.array(tracked_configs), np.array(reference_configs)
 
-def animate_path(obstacles: List[np.ndarray], trajectory_data, fps: int = 10, duration: float = 20.0, src_dir=src_dir):
+def animate_path(obstacles: List[np.ndarray], tracked_configs, reference_configs, dt: float = 0.02, src_dir=src_dir):
     """
     Create an animation of the robot arm tracking the planned path.
+    Deprecated: Use utils_visualization.create_animation instead.
     """
-    print(f"\nStarting animation with duration: {duration}s")
-    
-    # Get tracked configurations and reference configs
-    tracked_configs, reference_configs = track_planned_path(
-        obstacles, 
-        trajectory_data, 
-        trajectory_data['waypoints'][0],
-        dt=0.02, 
-        duration=duration,  # Increased duration
-        control_type='clf_cbf',
-        use_bezier=True
-    )
-    
-    # Create comparison plot
-    plot_path_comparison(trajectory_data['waypoints'], tracked_configs, src_dir = src_dir)
-    
-    n_frames = int(fps * duration)
-    path_indices = np.linspace(0, len(tracked_configs) - 1, n_frames, dtype=int)
-    
-    
-    # Create figure once
-    fig, ax = plt.subplots(figsize=(10, 10))
-    frames = []
-    
-    for i in path_indices:
-        ax.clear()
-        current_config = tracked_configs[i]
-        
-        
-        # Plot the environment and current configuration
-        plot_environment(obstacles, current_config, ax=ax, robot_color='blue', label='Current')
-        
-        # Plot reference configuration
-        plot_environment(obstacles, reference_configs[i], ax=ax, robot_color='green', 
-                        plot_obstacles=False, label='Reference', robot_alpha=0.5)
-        
-        # Set consistent axis limits
-        ax.set_title(f'Frame {i}/{len(path_indices)}')
-        ax.legend()
-        
-        # Convert plot to RGB array
-        fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        frames.append(image)
-    
-    plt.close(fig)
-    
-    # Save animation
-    print("Saving animation...")
-    imageio.mimsave(os.path.join(src_dir, 'figures/robot_animation.mp4'), frames, fps=fps)
-    print("Animation saved as 'figures/robot_animation.mp4'")
+    return create_animation(obstacles, tracked_configs, reference_configs, dt, src_dir)
 
 
 if __name__ == "__main__":
     __spec__ = None
 
-    trained_model_path = os.path.join(src_dir, "trained_models/cdf_models/cdf_model_2_links_truncated_new.pt")  # Adjust path as needed, 2_links or 4_links
+    trained_model_path = os.path.join(src_dir, "trained_models/cdf_models/cdf_model_2_links_truncated_new.pt")  # Adjust path as needed
     torch_model = load_learned_cdf(trained_model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -373,9 +298,7 @@ if __name__ == "__main__":
     # Create obstacles
     obstacles = create_obstacles(rng=rng)
 
-    cdf = CDF(trained_model_path, obstacles, device, truncation_value=0.4)
-
-
+    robot_cdf = RobotCDF(torch_model, device, truncation_value=0.3)
     # Make sure the figures directory exists
     os.makedirs(os.path.join(src_dir, 'figures'), exist_ok=True)
 
@@ -384,5 +307,21 @@ if __name__ == "__main__":
     goal_config = np.array([2., 2.])
 
     # Plan and visualize
-    result = plan_and_visualize(cdf, obstacles, initial_config, goal_config)
+    result = plan_and_visualize(robot_cdf, obstacles, initial_config, goal_config)
+    
+    if result is not None:
+        # Get tracked configurations and reference configs
+        tracked_configs, reference_configs = track_planned_path(
+            obstacles, 
+            result, 
+            initial_config,
+            dt=0.02, 
+            duration=20.0,
+            control_type='clf_cbf',
+            use_bezier=True
+        )
+        
+        # Create animation
+        animate_path(obstacles, tracked_configs, reference_configs, dt=0.02)
+    
     plt.show()
