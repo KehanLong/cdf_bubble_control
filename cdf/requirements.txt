@@ -1,5 +1,0 @@
-torch
-numpy 
-matplotlib
-pybullet
-pytorch-minimize

@@ -1,0 +1,98 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import imageio
+import os
+
+from utils_env import plot_environment
+
+
+def visualize_results(obstacles, initial_config, goal_config, trajectory, bezier_curves, src_dir):
+    """Create visualizations of the planning results"""
+    # Create workspace visualization
+    fig_ws, ax_ws = plt.subplots(figsize=(12, 12))
+    
+    if trajectory is not None:
+        # Plot intermediate configurations
+        num_samples = 8
+        indices = np.linspace(0, len(trajectory)-1, num_samples, dtype=int)
+        
+        for i, idx in enumerate(indices[1:-1]):
+            config = trajectory[idx]
+            alpha = 0.9 - ((i) / (num_samples-3)) * 0.6
+            plot_environment(obstacles, config, ax=ax_ws, 
+                           robot_color='gray', 
+                           robot_alpha=alpha,
+                           plot_obstacles=(i==0),
+                           add_to_legend=False)
+        
+        # Plot initial trajectory point
+        plot_environment(obstacles, trajectory[indices[0]], ax=ax_ws,
+                        robot_color='gray',
+                        robot_alpha=1.0,
+                        plot_obstacles=False,
+                        label='Planned Path')
+    
+    # Plot initial and goal configurations
+    plot_environment(obstacles, initial_config, ax=ax_ws, 
+                    goal_angles=goal_config,
+                    robot_color='blue', 
+                    robot_alpha=1.0,
+                    plot_obstacles=False,
+                    label='Initial Config',
+                    save_path=os.path.join(src_dir, 'figures/workspace_visualization.png'))
+    
+    print("Saved workspace visualization")
+
+def plot_path_comparison(planned_configs, tracked_configs, src_dir):
+    """
+    Create a visualization comparing planned and executed paths.
+    
+    Args:
+        planned_configs: Array of planned configurations (N, 2)
+        tracked_configs: Array of tracked/executed configurations (M, 2)
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7))
+    
+    # Plot in configuration space (left plot)
+    ax1.plot(planned_configs[:, 0], planned_configs[:, 1], 
+             'b-', linewidth=2, label='Planned Path')
+    ax1.plot(tracked_configs[:, 0], tracked_configs[:, 1], 
+             'r--', linewidth=2, label='Executed Path')
+    
+    # Add start and end points
+    ax1.plot(planned_configs[0, 0], planned_configs[0, 1], 'go', markersize=10, label='Start')
+    ax1.plot(planned_configs[-1, 0], planned_configs[-1, 1], 'ro', markersize=10, label='Goal')
+    
+    ax1.set_xlabel('θ₁', fontsize=14)
+    ax1.set_ylabel('θ₂', fontsize=14)
+    ax1.set_title('Configuration Space Comparison', fontsize=16)
+    ax1.legend(fontsize=12)
+    ax1.grid(True)
+    
+    # Plot tracking error over time (right plot)
+    # Interpolate planned path to match length of tracked path
+    from scipy.interpolate import interp1d
+    planned_times = np.linspace(0, 1, len(planned_configs))
+    tracked_times = np.linspace(0, 1, len(tracked_configs))
+    
+    # Create interpolation function for each joint
+    interp_funcs = [interp1d(planned_times, planned_configs[:, i]) 
+                   for i in range(planned_configs.shape[1])]
+    
+    # Get interpolated planned configurations at tracked times
+    interpolated_planned = np.column_stack([f(tracked_times) for f in interp_funcs])
+    
+    # Compute tracking error
+    tracking_error = np.linalg.norm(tracked_configs - interpolated_planned, axis=1)
+    
+    ax2.plot(tracked_times, tracking_error, 'k-', linewidth=2)
+    ax2.set_xlabel('Normalized Time', fontsize=14)
+    ax2.set_ylabel('Tracking Error', fontsize=14)
+    ax2.set_title('Tracking Error Over Time', fontsize=16)
+    ax2.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(src_dir, 'figures/path_comparison.png'), dpi=300, bbox_inches='tight')
+    print("Saved path comparison plot")
+    plt.close()
+
