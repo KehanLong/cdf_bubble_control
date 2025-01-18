@@ -14,6 +14,8 @@ sys.path.append(str(PROJECT_ROOT))
 
 from models.xarm_model import XArmFK
 
+src_dir = PROJECT_ROOT 
+
 def set_random_seed(seed=42):
     """Set random seed for reproducibility"""
     torch.manual_seed(seed)
@@ -141,11 +143,11 @@ def train_cdf_network(
     # Convert paths to absolute paths
     contact_db_path = Path(contact_db_path)
     if not contact_db_path.is_absolute():
-        contact_db_path = PROJECT_ROOT / contact_db_path
+        contact_db_path = src_dir / contact_db_path
     
     model_save_dir = Path(model_save_dir)
     if not model_save_dir.is_absolute():
-        model_save_dir = PROJECT_ROOT / model_save_dir
+        model_save_dir = src_dir / model_save_dir
     
     # Create save directory
     model_save_dir.mkdir(parents=True, exist_ok=True)
@@ -170,8 +172,9 @@ def train_cdf_network(
         final_model_filename = f'final_model_bfgs_{activation}_final.pth'
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5000,
+        optimizer, mode='min', factor=0.5, patience=50,
         threshold=0.01, verbose=True
     )
     
@@ -247,11 +250,11 @@ if __name__ == "__main__":
     set_random_seed(42)
     
     # Use relative paths from project root
-    contact_db_path = "data/cdf_data/refined_bfgs_100_contact_db.npy"
-    model_save_dir = "trained_models/cdf"
+    contact_db_path = src_dir / "data/cdf_data/refined_bfgs_100_contact_db.npy"
+    model_save_dir = src_dir / "trained_models/cdf"
 
 
-    pretrained_model = "trained_models/cdf/best_model_bfgs_gelu_2.pth"
+    pretrained_model = src_dir / "trained_models/cdf/best_model_bfgs_gelu_2.pth"
     
     model, final_loss = train_cdf_network(
         contact_db_path=contact_db_path,

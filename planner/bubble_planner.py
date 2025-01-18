@@ -4,7 +4,13 @@ import torch
 import cvxpy
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
-import cProfile
+import sys
+from pathlib import Path
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root)) 
+
+
 from sdf_marching.samplers import get_rapidly_exploring, get_uniform_random, get_rapidly_exploring_connect
 from sdf_marching.overlap import position_to_max_circle_idx
 from sdf_marching.samplers.tracing import trace_toward_graph_all
@@ -20,31 +26,77 @@ class Bubble:
 
 @dataclass
 class PlanningMetrics:
+    """Represents planning metrics"""
     success: bool
     num_collision_checks: int
     path_length: float
     num_samples: int
     planning_time: float
+    reached_goal_index: int = 0  # Add default value of 0
+
+def create_multigoal_sampler(mins, maxs, goal_configs, p0=0.2, rng=None):
+    """
+    Creates a sampler that:
+    - With probability p0, chooses one of the G goals (each with p0/G probability)
+    - With probability 1-p0, returns uniform random sample
+    
+    Args:
+        mins: Lower bounds for sampling
+        maxs: Upper bounds for sampling
+        goal_configs: List of goal configurations
+        p0: Probability of sampling from goals (default: 0.2)
+        rng: Random number generator (optional)
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    
+    # Ensure all configs have same shape as mins/maxs
+    mins = np.asarray(mins)
+    maxs = np.asarray(maxs)
+    goal_configs = [np.asarray(g).reshape(mins.shape) for g in goal_configs]
+    
+    def sample_fn(batch_size=100):
+        # Pre-allocate array with correct shape
+        samples = np.zeros((batch_size, mins.shape[0]), dtype=np.float32)
+        
+        for i in range(batch_size):
+            if rng.random() < p0:
+                # Choose one of the G goals randomly
+                goal_idx = rng.integers(0, len(goal_configs))
+                samples[i] = goal_configs[goal_idx]
+            else:
+                # Uniform random sampling
+                samples[i] = rng.uniform(mins, maxs)
+        
+        return samples[0] if batch_size == 1 else samples
+    
+    return sample_fn
 
 class BubblePlanner:
-    def __init__(self, robot_cdf, joint_limits, device='cuda', seed=42):
+    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, device='cuda', seed=42, planner_type='bubble'):
         """Initialize the bubble planner using CDF for collision checking"""
         self.random_seed = seed
         np.random.seed(seed)
         
         # Store robot info
         self.robot_cdf = robot_cdf
-        self.joint_limits = joint_limits
+        self.joint_limits = (
+            np.asarray(joint_limits[0], dtype=np.float32),
+            np.asarray(joint_limits[1], dtype=np.float32)
+        )
         self.device = device
         
         # Planning parameters
-        self.epsilon = 1E-2          # clearance distance (safety margin)
-        self.min_radius = 5E-2       # Minimum bubble radius
-        # self.max_cdf = 1.0           
-        self.num_samples = 5E4
+        self.epsilon = 1E-1          
+        self.min_radius = 5E-2       
+        self.num_samples = max_samples             
         self.max_iterations = 5E4
-        self.goal_bias = 0.2
+        self.goal_bias = 0.1
         self.cdf_query_count = 0
+        
+        # Planner type ('rrt' or 'rrt_connect')
+        assert planner_type in ['bubble', 'bubble_connect'], "planner_type must be 'bubble' or 'bubble_connect'"
+        self.planner_type = planner_type
 
     def query_cdf(self, config: np.ndarray, obstacle_points: torch.Tensor) -> float:
         """Query CDF value for a given configuration"""
@@ -96,63 +148,90 @@ class BubblePlanner:
         """Generate interpolated path between two connected bubbles"""
         return np.linspace(b1.center, b2.center, num_points)
 
-    def generate_bubbles(self, start_config: np.ndarray, goal_config: np.ndarray, obstacle_points: torch.Tensor):
-        """Generate bubbles using RRT-Connect"""
-        # Convert configs to float32
-        start_config = start_config.astype(np.float32)[:6]
-        goal_config = goal_config.astype(np.float32)[:6]
-        
-        # Wrap CDF query for compatibility
-        def cdf_wrapper(x):
-            if len(x.shape) > 1:
-                return np.array([self.query_cdf(xi, obstacle_points) for xi in x])
-            return self.query_cdf(x, obstacle_points)
-        
+    def generate_bubbles(self, start_config: np.ndarray, goal_configs: List[np.ndarray], obstacle_points: torch.Tensor):
+        """Generate bubbles using either RRT or RRT-Connect with multiple goals"""
+        print("Starting bubble generation...")
         try:
+
+            
+            # Convert configs to float32 and ensure consistent shapes
+            start_config = np.asarray(start_config, dtype=np.float32)
+            goal_configs = [np.asarray(goal, dtype=np.float32) for goal in goal_configs]
+            
+            
+            # Ensure all configs have same dimensionality
+            assert all(goal.shape == start_config.shape for goal in goal_configs), \
+                f"All configurations must have the same shape. Start: {start_config.shape}, Goals: {[g.shape for g in goal_configs]}"
+            
+            # Wrap CDF query for compatibility
+            def cdf_wrapper(x):
+                if isinstance(x, np.ndarray) and len(x.shape) > 1:
+                    return np.array([self.query_cdf(xi, obstacle_points) for xi in x])
+                return self.query_cdf(x, obstacle_points)
+            
             # Create RNG with seed
             rng = np.random.default_rng(self.random_seed)
             
-            # Bi-directional bubble sampling-based planning
-            # overlaps_graph, max_circles, _ = get_rapidly_exploring_connect(
-            #     cdf_wrapper,
-            #     self.epsilon,
-            #     self.min_radius,
-            #     int(self.num_samples),
-            #     self.joint_limits[0],
-            #     self.joint_limits[1],
-            #     start_point=start_config,
-            #     batch_size=100,
-            #     max_retry=500,
-            #     max_retry_epsilon=100,
-            #     max_num_iterations=int(self.max_iterations),
-            #     prc = self.goal_bias,                # goal bias
-            #     end_point=goal_config,
-            #     rng=rng
-            # )
-
-            # one directional bubble sampling-based planning
-            overlaps_graph, max_circles, _ = get_rapidly_exploring(
-                cdf_wrapper,
-                self.epsilon,
-                self.min_radius,
-                int(self.num_samples),
-                self.joint_limits[0],
-                self.joint_limits[1],
-                start_point=start_config,
-                batch_size=10,
-                max_retry=500,
-                max_num_iterations=int(self.max_iterations),
-                prc = self.goal_bias,
-                end_point=goal_config,
-                rng=rng
-            )
+            if self.planner_type == 'bubble_connect':
+                # Use RRT-Connect with multiple goals
+                overlaps_graph, max_circles, _ = get_rapidly_exploring_connect(
+                    cdf_wrapper,
+                    self.epsilon,
+                    self.min_radius,
+                    int(self.num_samples),
+                    self.joint_limits[0],
+                    self.joint_limits[1],
+                    start_point=start_config,
+                    batch_size=100,
+                    max_retry=500,
+                    max_retry_epsilon=100,
+                    max_num_iterations=int(self.max_iterations),
+                    prc=self.goal_bias,
+                    end_points=goal_configs,
+                    rng=rng,
+                    profile=False
+                )
+            else:
+                print("Using RRT planner...")
+                # Create multi-goal sampler for RRT
+                sampler = create_multigoal_sampler(
+                    self.joint_limits[0],  # mins
+                    self.joint_limits[1],  # maxs
+                    goal_configs,
+                    p0=self.goal_bias,
+                    rng=rng
+                )
+                
+                # Use standard RRT with custom sampler
+                overlaps_graph, max_circles, _ = get_rapidly_exploring(
+                    cdf_wrapper,
+                    self.epsilon,
+                    self.min_radius,
+                    int(self.num_samples),
+                    self.joint_limits[0],
+                    self.joint_limits[1],
+                    start_point=start_config,
+                    batch_size=10,
+                    max_retry=500,
+                    max_num_iterations=int(self.max_iterations),
+                    sample_fn=sampler,  # Use our custom sampler
+                    rng=rng,
+                    profile=False
+                )
             
-            print(f"\nBubble generation complete:")
-            print(f"Number of bubbles: {len(overlaps_graph.vs)}")
+            print(f"Bubble generation complete. Number of bubbles: {len(overlaps_graph.vs)}")
+            
+            # Add hausdorff_distance attribute to edges if not present
+            for edge in overlaps_graph.es:
+                if "hausdorff_distance" not in edge.attributes():
+                    from_circle = overlaps_graph.vs[edge.source]["circle"]
+                    to_circle = overlaps_graph.vs[edge.target]["circle"]
+                    edge["hausdorff_distance"] = from_circle.hausdorff_distance_to(to_circle)
+            
             return overlaps_graph, max_circles
             
         except Exception as e:
-            print(f"Bubble generation failed: {str(e)}")
+            print(f"Bubble generation failed with error: {str(e)}")
             raise e
 
     def find_path(self, bubbles: List[Bubble]) -> np.ndarray:
@@ -163,79 +242,137 @@ class BubblePlanner:
             path.extend(segment)
         return np.array(path)
 
-    def plan(self, start_config: np.ndarray, goal_config: np.ndarray, obstacle_points: torch.Tensor):
-        """Plan a path from start to goal configuration"""
+    def plan(self, start_config: np.ndarray, goal_configs: List[np.ndarray], obstacle_points: torch.Tensor):
+        """Plan a path from start to multiple goal configurations"""
         print("\nStarting bubble-based planning...")
+        print(f"Input shapes - Start: {start_config.shape}, Goals: {[g.shape for g in goal_configs]}, Obstacles: {obstacle_points.shape}")
         
         start_time = time.time()
         self.cdf_query_count = 0  # Reset counter
         
         try:
             # Generate bubbles with obstacle points
-            overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_config, obstacle_points)
+            overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_configs, obstacle_points)
             
-            # Find start and goal indices
+            # Find start index and try to connect if needed
             start_idx = position_to_max_circle_idx(overlaps_graph, start_config)
-            end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
-            
-            # Connect start/goal if needed
+            print(f"Start index: {start_idx}")
             if start_idx < 0:
+                print("Repairing graph for start")
                 overlaps_graph, start_idx = trace_toward_graph_all(
                     overlaps_graph, 
-                    lambda x: self.query_cdf(x, obstacle_points),  # Use query_cdf with points
+                    lambda x: self.query_cdf(x, obstacle_points),
                     self.epsilon, 
                     self.min_radius, 
                     start_config
                 )
+
+            # Try to connect each goal and store successful connections
+            goal_connections = []
+            for goal_idx, goal_config in enumerate(goal_configs):
+                print(f"Processing goal {goal_idx}: {goal_config}")
+                end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
+                print(f"Goal {goal_idx} index: {end_idx}")
+                if end_idx < 0:
+                    print(f"Attempting to repair graph for goal {goal_idx}")
+                    try:
+                        overlaps_graph, end_idx = trace_toward_graph_all(
+                            overlaps_graph, 
+                            lambda x: self.query_cdf(x, obstacle_points),
+                            self.epsilon, 
+                            self.min_radius, 
+                            goal_config
+                        )
+                        goal_connections.append((end_idx, goal_config))
+                        print(f"Successfully connected goal {goal_idx}")
+                    except Exception as e:
+                        print(f"Failed to connect goal {goal_idx}: {e}")
+                else:
+                    goal_connections.append((end_idx, goal_config))
+                    print(f"Goal {goal_idx} already connected")
+
+            if not goal_connections:
+                raise Exception("No goals could be connected to the graph")
+
+            print(f"Number of connected goals: {len(goal_connections)}")
             
-            if end_idx < 0:
-                centers = np.array([v['circle'].centre for v in overlaps_graph.vs])
-                end_idx = np.argmin(np.linalg.norm(centers - goal_config, axis=1))
-                goal_config = centers[end_idx].copy()
-            
-            # Find shortest path
+            # Find best path among all connected goals
             overlaps_graph.to_directed()
-            path_result = get_shortest_path(
-                lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
-                overlaps_graph,
-                start_idx,
-                end_idx,
-                cost_name="cost",
-                return_epath=True,
-            )
+            best_path = None
+            best_cost = float('inf')
+            best_goal_config = None
+            best_goal_index = 0  # Add this to track which goal was reached
+
+            for goal_idx, (end_idx, goal_config) in enumerate(goal_connections):
+                try:
+                    print(f"Trying path to goal {goal_idx} at index {end_idx}")
+                    path_result = get_shortest_path(
+                        lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
+                        overlaps_graph,
+                        start_idx,
+                        end_idx,
+                        cost_name="hausdorff_distance",
+                        return_epath=True,
+                    )
+                    
+                    if path_result is not None:
+                        print(f"Found path: {path_result}")
+                        path_cost = sum(overlaps_graph.es[e]["hausdorff_distance"] for e in path_result[0])
+                        print(f"Path cost: {path_cost}")
+                        if path_cost < best_cost:
+                            best_cost = path_cost
+                            best_path = path_result
+                            best_goal_config = goal_config
+                            best_goal_index = goal_idx  # Store the index of the best goal
+                except Exception as e:
+                    print(f"Error finding path to goal {goal_idx}: {e}")
+                    continue
             
-            # Optimize trajectory
-            bps, constr_bps = edgeseq_to_traj_constraint_bezier(
-                overlaps_graph.es[path_result[0]], 
-                start_config, 
-                goal_config
-            )
+            if best_path is None:
+                raise Exception("No valid path found to any goal")
             
-            cost = bezier_cost_all(bps)
-            prob = cvxpy.Problem(cvxpy.Minimize(cost), constr_bps)
-            prob.solve()
+            print(f"Found best path: {best_path}")
+            print(f"Best cost: {best_cost}")
             
-            # Generate final trajectory
-            times = np.linspace(0, 1.0, 50)
-            trajectory = np.vstack([bp.query(times).value for bp in bps])
-            
-            print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
-            
-            metrics = PlanningMetrics(
-                success=True,
-                num_collision_checks=self.cdf_query_count,
-                path_length=np.sum([np.linalg.norm(trajectory[i+1] - trajectory[i]) 
-                                  for i in range(len(trajectory)-1)]),
-                num_samples=len(overlaps_graph.vs),  # Number of bubbles/samples
-                planning_time=time.time() - start_time
-            )
-            
-            return {
-                'waypoints': trajectory,
-                'bezier_curves': bps,
-                'times': times,
-                'metrics': metrics
-            }
+            try:
+                # Optimize trajectory for best path
+                bps, constr_bps = edgeseq_to_traj_constraint_bezier(
+                    overlaps_graph.es[best_path[0]], 
+                    start_config, 
+                    best_goal_config
+                )
+                
+                cost = bezier_cost_all(bps)
+                prob = cvxpy.Problem(cvxpy.Minimize(cost), constr_bps)
+                prob.solve()
+                
+                # Generate final trajectory
+                times = np.linspace(0, 1.0, 50)
+                trajectory = np.vstack([bp.query(times).value for bp in bps])
+                
+                print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
+                
+                metrics = PlanningMetrics(
+                    success=True,
+                    num_collision_checks=self.cdf_query_count,
+                    path_length=np.sum([np.linalg.norm(trajectory[i+1] - trajectory[i]) 
+                                      for i in range(len(trajectory)-1)]),
+                    num_samples=len(overlaps_graph.vs),
+                    planning_time=time.time() - start_time,
+                    reached_goal_index=best_goal_index  # Include the reached goal index
+                )
+                
+                return {
+                    'waypoints': trajectory,
+                    'bezier_curves': bps,
+                    'times': times,
+                    'bubbles': overlaps_graph,
+                    'metrics': metrics,
+                    'selected_goal': best_goal_config
+                }
+            except Exception as e:
+                print(f"Error in trajectory generation: {e}")
+                raise e
             
         except Exception as e:
             print(f"Planning failed: {str(e)}")

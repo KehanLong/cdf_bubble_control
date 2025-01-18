@@ -49,20 +49,19 @@ class XArmController:
             p2=1e2,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=self.cbf_rate,
-                safety_margin=0.2
+            safety_margin=0.2
             )
         # Add DR-CLF-CBF controller
         elif control_type == 'clf_dro_cbf':
             self.clf_dro_cbf_controller = ClfCbfDrccpController(
-                p1=1e0,    # Control effort penalty
-            p2=1e1,    # CLF slack variable penalty
+            p1=1e0,    # Control effort penalty
+            p2=1e0,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=self.cbf_rate,
-            wasserstein_r=0.02,
+            wasserstein_r=0.03,
             epsilon=0.1,
             num_samples=self.num_samples,  # Number of CBF samples to use
-            state_dim=6,
-            workspace_dim=3,
+            state_dim=6,                #xArm6
             control_limits=self.max_velocity
         )
 
@@ -266,7 +265,9 @@ class XArmController:
             governor = BezierReferenceGovernor(
                 initial_state=initial_state,
                 trajectory_data=trajectory_data,
-                dt=dt
+                dt=dt, 
+                k=0.5,
+                zeta=15
             )
         else:
             print("Using discrete waypoint-based reference governor")

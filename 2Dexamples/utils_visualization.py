@@ -3,6 +3,7 @@ import numpy as np
 import imageio
 import os
 from typing import List
+import torch
 
 from utils_env import plot_environment
 
@@ -150,6 +151,74 @@ def create_animation(obstacles: List[np.ndarray], tracked_configs, reference_con
         print(f"Animation saved as '{output_path}'")
     
     return frames
+
+def visualize_cdf_planning(robot_cdf, initial_config, goal_configs, trajectory, bubbles, 
+                          obstacle_points, src_dir, resolution=100):
+    """
+    Visualize CDF planning in configuration space (theta1-theta2)
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # Create a grid of configurations
+    theta1 = np.linspace(-np.pi, np.pi, resolution)
+    theta2 = np.linspace(-np.pi, np.pi, resolution)
+    T1, T2 = np.meshgrid(theta1, theta2)
+    
+    # Evaluate CDF values for each configuration
+    cdf_values = np.zeros((resolution, resolution))
+    for i in range(resolution):
+        for j in range(resolution):
+            config = torch.tensor(
+                [[T1[j, i], T2[j, i]]],
+                device=robot_cdf.device,
+                dtype=torch.float32
+            )
+            cdf_values[i, j] = robot_cdf.query_cdf(
+                obstacle_points.unsqueeze(0).unsqueeze(0),
+                config
+            ).cpu().numpy().min()
+    
+    # Plot CDF field with transposed values
+    im = ax.imshow(cdf_values.T, extent=[-np.pi, np.pi, -np.pi, np.pi], 
+                   origin='lower', cmap='viridis', aspect='equal')
+    plt.colorbar(im, ax=ax, label='CDF Value')
+    
+    # Plot bubbles from igraph Graph object
+    if bubbles is not None:  # bubbles is actually an igraph Graph
+        print(f"Plotting bubbles from graph with {len(bubbles.vs)} vertices")
+        for vertex in bubbles.vs:
+            circle = vertex["circle"]  # Each vertex has a circle attribute
+            if circle is not None:
+                center = circle.centre
+                radius = circle.radius
+                circle_patch = plt.Circle(
+                    (center[0], center[1]), 
+                    radius, 
+                    fill=False, 
+                    color='cyan', 
+                    alpha=0.5
+                )
+                ax.add_patch(circle_patch)
+    
+    # Plot trajectory if available
+    if trajectory is not None:
+        trajectory = np.array(trajectory)
+        ax.plot(trajectory[:, 0], trajectory[:, 1], 'r-', linewidth=2, label='Planned Path')
+    
+    # Plot start and goals
+    ax.plot(initial_config[0], initial_config[1], 'go', markersize=10, label='Start')
+    for i, goal in enumerate(goal_configs):
+        ax.plot(goal[0], goal[1], 'r^', markersize=10, label=f'Goal {i+1}')
+    
+    ax.set_xlabel('θ₁')
+    ax.set_ylabel('θ₂')
+    ax.set_title('CDF Planning Visualization')
+    ax.legend()
+    
+    # Save figure
+    plt.savefig(os.path.join(src_dir, 'figures/cdf_planning_visualization.png'), 
+                bbox_inches='tight', dpi=300)
+    plt.close()
 
 
 
