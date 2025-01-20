@@ -73,10 +73,19 @@ def create_multigoal_sampler(mins, maxs, goal_configs, p0=0.2, rng=None):
     return sample_fn
 
 class BubblePlanner:
-    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, device='cuda', seed=42, planner_type='bubble'):
+    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, device='cuda', seed=42, planner_type='bubble', early_termination=True):
         """Initialize the bubble planner using CDF for collision checking"""
         self.random_seed = seed
         np.random.seed(seed)
+
+        torch.manual_seed(seed)
+        if device == 'cuda':
+            torch.cuda.manual_seed(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        
+        # Create local RNG
+        self.rng = np.random.default_rng(seed)
         
         # Store robot info
         self.robot_cdf = robot_cdf
@@ -88,11 +97,13 @@ class BubblePlanner:
         
         # Planning parameters
         self.epsilon = 1E-1          
-        self.min_radius = 5E-2       
+        self.min_radius = 1E-1      
         self.num_samples = max_samples             
         self.max_iterations = 5E4
         self.goal_bias = 0.1
         self.cdf_query_count = 0
+
+        self.early_termination = early_termination
         
         # Planner type ('rrt' or 'rrt_connect')
         assert planner_type in ['bubble', 'bubble_connect'], "planner_type must be 'bubble' or 'bubble_connect'"
@@ -118,13 +129,14 @@ class BubblePlanner:
             return_gradients=False
         )
         
-        min_cdf = cdf_values.min().detach().cpu().numpy()   
+        min_cdf = max(cdf_values.min().detach().cpu().numpy() - 0.1, 0.05)
 
-        # min_cdf = max(min_cdf - 0.2, 0.05)   # 0.1 for safety
+        # For 2d: 
+        # min_cdf = max(cdf_values.min().detach().cpu().numpy() - 0.1, 0.05)
+    
+        # if using sdf, use this
+        # min_cdf = max(min_cdf * 5., 0.05)   # 0.1 for safety
 
-        #min_cdf = 2.0
-
-        #print(f"Min CDF: {min_cdf}")
         
         return min_cdf
 
@@ -169,8 +181,6 @@ class BubblePlanner:
                     return np.array([self.query_cdf(xi, obstacle_points) for xi in x])
                 return self.query_cdf(x, obstacle_points)
             
-            # Create RNG with seed
-            rng = np.random.default_rng(self.random_seed)
             
             if self.planner_type == 'bubble_connect':
                 # Use RRT-Connect with multiple goals
@@ -182,24 +192,23 @@ class BubblePlanner:
                     self.joint_limits[0],
                     self.joint_limits[1],
                     start_point=start_config,
-                    batch_size=100,
-                    max_retry=500,
-                    max_retry_epsilon=100,
+                    batch_size=10,
                     max_num_iterations=int(self.max_iterations),
                     prc=self.goal_bias,
-                    end_points=goal_configs,
-                    rng=rng,
-                    profile=False
+                    end_point=goal_configs,
+                    rng=self.rng,
+                    profile=False,
+                    early_termination=self.early_termination
                 )
             else:
-                print("Using RRT planner...")
+                print("Using Bubble-RRT planner...")
                 # Create multi-goal sampler for RRT
                 sampler = create_multigoal_sampler(
                     self.joint_limits[0],  # mins
                     self.joint_limits[1],  # maxs
                     goal_configs,
                     p0=self.goal_bias,
-                    rng=rng
+                    rng=self.rng
                 )
                 
                 # Use standard RRT with custom sampler
@@ -211,12 +220,13 @@ class BubblePlanner:
                     self.joint_limits[0],
                     self.joint_limits[1],
                     start_point=start_config,
-                    batch_size=10,
-                    max_retry=500,
+                    end_point=goal_configs,
+                    batch_size=2,
                     max_num_iterations=int(self.max_iterations),
                     sample_fn=sampler,  # Use our custom sampler
-                    rng=rng,
-                    profile=False
+                    rng=self.rng,
+                    profile=False,
+                    early_termination=self.early_termination
                 )
             
             print(f"Bubble generation complete. Number of bubbles: {len(overlaps_graph.vs)}")
@@ -253,6 +263,8 @@ class BubblePlanner:
         try:
             # Generate bubbles with obstacle points
             overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_configs, obstacle_points)
+
+            print('cdf_query_count_in generating bubbles', self.cdf_query_count)
             
             # Find start index and try to connect if needed
             start_idx = position_to_max_circle_idx(overlaps_graph, start_config)

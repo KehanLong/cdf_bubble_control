@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 @dataclass
 class PlanningMetrics:
@@ -19,17 +19,20 @@ class PlanningMetrics:
     path_length: float
     num_samples: int
     planning_time: float
+    reached_goal_index: int
 
 def to_tensor(s, dof):
     return torch.tensor([s[i] for i in range(dof)], dtype=torch.float32)
 
 class ValidityCheckerWrapper:
-    def __init__(self, robot_sdf, points_robot, device='cuda'):
+    def __init__(self, robot_sdf, robot_cdf, points_robot, dof=6, safety_margin=0.01, device='cuda'):
         self.robot_sdf = robot_sdf
+        self.robot_cdf = robot_cdf
         self.points_robot = points_robot  # Should be shape [N, 3]
         self.device = device
+        self.safety_margin = safety_margin
+        self.dof = dof
         self.counter = 0
-        self.dof = 6
     
     def __call__(self, state) -> bool:
         """Check if configuration is collision-free"""
@@ -51,8 +54,7 @@ class ValidityCheckerWrapper:
         # Query SDF values
         sdf_values = self.robot_sdf.query_sdf(
             points=points,  # Shape: [1, N, 3]
-            joint_angles=config,  # Shape: [1, 6]
-            return_gradients=False
+            joint_angles=config  # Shape: [1, num_links]
         )
         
         # Debug prints for SDF values
@@ -61,7 +63,7 @@ class ValidityCheckerWrapper:
         # print(f"SDF max value: {sdf_values.max().item():.6f}")
         # print(f"SDF mean value: {sdf_values.mean().item():.6f}")
         
-        is_valid = sdf_values.min().item() > 0.01
+        is_valid = sdf_values.min().item() > self.safety_margin
         #print(f"Checking config {config.cpu().numpy()[0]}, valid: {is_valid}")
         return is_valid
     
@@ -71,11 +73,13 @@ class ValidityCheckerWrapper:
 class OMPLRRTPlanner:
     def __init__(self, 
                  robot_sdf,
+                 robot_cdf,
                  robot_fk,
                  joint_limits: tuple,
                  planner_type: str = 'rrt',
                  device: str = 'cuda',
-                 seed: int = None):
+                 seed: int = None,
+                 safety_margin: float = 0.01):
         """
         Initialize OMPL RRT planner
         
@@ -88,10 +92,11 @@ class OMPLRRTPlanner:
             seed: Random seed for reproducibility
         """
         self.robot_sdf = robot_sdf
+        self.robot_cdf = robot_cdf
         self.robot_fk = robot_fk
         self.device = device
         self.dof = len(joint_limits[0])
-        
+        self.safety_margin = safety_margin
         # Set random seed if provided
         if seed is not None:
             print(f"Setting RRT random seed: {seed}")
@@ -114,39 +119,52 @@ class OMPLRRTPlanner:
         
     def plan(self, 
              start_config: np.ndarray,
-             goal_config: np.ndarray,
+             goal_configs: List[np.ndarray],
              obstacle_points: torch.Tensor,
              max_time: float = 30.0,
              return_metrics: bool = True) -> Dict[str, Any]:
         """
-        Plan path using OMPL RRT
+        Plan path using OMPL RRT with multiple goals
         """
         print("\nPlanning Debug Info:")
         print(f"Start config: {start_config}")
-        print(f"Goal config: {goal_config}")
+        print(f"Number of goals: {len(goal_configs)}")
         
         # Setup validity checker
-        self.validity_checker = ValidityCheckerWrapper(self.robot_sdf, obstacle_points, self.device)
+        self.validity_checker = ValidityCheckerWrapper(self.robot_sdf, self.robot_cdf, obstacle_points, 
+                                                       self.dof, self.safety_margin, self.device)
         self.si.setStateValidityChecker(ob.StateValidityCheckerFn(self.validity_checker))
-        self.si.setStateValidityCheckingResolution(0.001)
+
+        check_resolution = 0.01    # 0.01 for 2 joints, 0.001 for 6 joints
+        self.si.setStateValidityCheckingResolution(check_resolution)
         self.si.setup()
         
         # Setup problem definition
         pdef = ob.ProblemDefinition(self.si)
         
-        # Create start and goal states
+        # Create start state
         start = ob.State(self.space)
-        goal = ob.State(self.space)
-        
-        # Set joint values
         for i in range(self.dof):
             start[i] = float(start_config[i])
-            goal[i] = float(goal_config[i])
+        pdef.addStartState(start)
         
-        # Set start and goal states with threshold
-        goal_threshold = 0.1
+        # Create goal states and add them as multiple goals
+        goal_threshold = 0.05
         print(f"Using goal threshold: {goal_threshold}")
-        pdef.setStartAndGoalStates(start, goal, goal_threshold)
+        
+        # Create a MultiGoalRegion
+        mg = ob.GoalStates(self.si)
+        
+        # Add each goal state to the MultiGoalRegion
+        for i, goal_config in enumerate(goal_configs):
+            goal = ob.State(self.space)
+            for j in range(self.dof):
+                goal[j] = float(goal_config[j])
+            mg.addState(goal)
+            print(f"Added goal {i}: {goal_config}")
+        
+        # Set the multi-goal as the problem goal
+        pdef.setGoal(mg)
         
         # Create and setup planner
         planner = og.RRT(self.si)
@@ -175,28 +193,43 @@ class OMPLRRTPlanner:
             waypoints = np.array(waypoints)
             
             print(f"\nPath found with {len(waypoints)} waypoints")
-            print("First few waypoints:")
-            for i in range(min(3, len(waypoints))):
-                print(f"Waypoint {i}: {waypoints[i]}")
-            print("Last few waypoints:")
-            for i in range(max(0, len(waypoints)-2), len(waypoints)):
-                print(f"Waypoint {i}: {waypoints[i]}")
+            # print("First few waypoints:")
+            # for i in range(min(3, len(waypoints))):
+            #     print(f"Waypoint {i}: {waypoints[i]}")
+            # print("Last few waypoints:")
+            # for i in range(max(0, len(waypoints)-2), len(waypoints)):
+            #     print(f"Waypoint {i}: {waypoints[i]}")
             
-            # Check final waypoint distance to goal
-            final_dist = np.linalg.norm(waypoints[-1] - goal_config)
-            print(f"\nFinal waypoint distance to goal: {final_dist}")
+            # Find which goal was reached
+            final_waypoint = waypoints[-1]
+            reached_goal_index = 0
+            min_dist = float('inf')
+            for i, goal_config in enumerate(goal_configs):
+                dist = np.linalg.norm(final_waypoint - goal_config)
+                if dist < min_dist:
+                    min_dist = dist
+                    reached_goal_index = i
+            
+            print(f"\nReached goal index: {reached_goal_index}")
+            print(f"Final distance to reached goal: {min_dist}")
             
             # Compute path length
             path_length = 0.0
             for i in range(len(waypoints)-1):
                 path_length += np.linalg.norm(waypoints[i+1] - waypoints[i])
             
+            # Get number of vertices using PlannerData
+            pdata = ob.PlannerData(self.si)
+            planner.getPlannerData(pdata)
+            num_vertices = pdata.numVertices()
+            
             metrics = PlanningMetrics(
                 success=True,
-                num_collision_checks=self.validity_checker.counter,
+                num_collision_checks=self.validity_checker.counter,  # Total checks (vertex + edge)
                 path_length=path_length,
-                num_samples=self.validity_checker.counter,
-                planning_time=planning_time
+                num_samples=num_vertices,  # Using PlannerData to get vertex count
+                planning_time=planning_time,
+                reached_goal_index=reached_goal_index
             )
             
             return {
@@ -209,7 +242,8 @@ class OMPLRRTPlanner:
                 num_collision_checks=self.validity_checker.counter,
                 path_length=float('inf'),
                 num_samples=self.validity_checker.counter,
-                planning_time=planning_time
+                planning_time=planning_time,
+                reached_goal_index=-1
             )
             
             return {
@@ -244,11 +278,11 @@ def test_ompl_planner():
     
     # Test planning
     start_config = np.zeros(6)
-    goal_config = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+    goal_configs = [np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])]
     
     result = planner.plan(
         start_config=start_config,
-        goal_config=goal_config,
+        goal_configs=goal_configs,
         obstacle_points=visualizer.points_robot
     )
     

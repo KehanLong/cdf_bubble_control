@@ -153,7 +153,8 @@ class XArmSDFVisualizer:
                     self.robot_fk.joint_limits[:, 1].cpu().numpy()
                 ),
                 device=self.device,
-                seed=seed  # Pass seed to planner
+                seed=seed,  # Pass seed to planner
+                planner_type='bubble_connect'     # planner type option: 'bubble' or 'bubble_connect'
             )
         else:
             raise ValueError(f"Unknown planner type: {planner_type}")
@@ -458,8 +459,8 @@ class XArmSDFVisualizer:
             try:
                 trajectory_whole = self.bubble_planner.plan(
                     start_config=current_state,
-                    goal_config=goal_config,
-                    obstacle_points=self.points_robot  # Using only static points for planning
+                    goal_configs=[goal_config],  # Wrap goal_config in a list
+                    obstacle_points=self.points_robot
                 )
 
                 if trajectory_whole is None:
@@ -606,7 +607,7 @@ if __name__ == "__main__":
 
     # example goal pos: [0.7, 0.2, 0.6],  [0.2, 0.6, 0.6]    
 
-    seed = 5
+    seed = 42
     visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble_cdf', seed=seed)  # baselines: 'rrt', 'rrt_connect', 'mppi'
 
     # single demo

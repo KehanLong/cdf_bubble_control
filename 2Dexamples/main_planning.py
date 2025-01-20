@@ -1,9 +1,11 @@
 import numpy as np
 from typing import List
 from utils_env import create_obstacles
-from utils_visualization import visualize_results, visualize_cdf_planning
-from cdf_evaluate import load_learned_cdf, cdf_evaluate_model
+from utils_visualization import visualize_results, visualize_cdf_bubble_planning, visualize_ompl_rrt_planning
 import torch
+from robot_cdf import RobotCDF
+from robot_sdf import RobotSDF
+from utils_new import inverse_kinematics_analytical
 
 import sys
 import os
@@ -12,7 +14,7 @@ project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
 from planner.bubble_planner import BubblePlanner, PlanningMetrics
-# from planner.rrt_ompl import OMPLRRTPlanner
+from planner.rrt_ompl import OMPLRRTPlanner
 
 
 
@@ -31,60 +33,68 @@ def concatenate_obstacle_list(obstacle_list):
     """
     return np.concatenate(obstacle_list, axis=0)
 
-# a wrapper class for cdf model
-class RobotCDF:
-    def __init__(self, model, device, truncation_value=0.3):
-        self.model = model
-        self.device = device
-        self.truncation_value = truncation_value
-    
-    def query_cdf(self, points: torch.Tensor, joint_angles: torch.Tensor, return_gradients: bool = False) -> torch.Tensor:
-        """
-        Query CDF values for given points and joint angles.
-        """
-        
-        # Ensure points and joint_angles are properly shaped
-        if points.dim() == 4:  # [1, 1, N, 2]
-            points = points.squeeze(1)  # [1, N, 2]
-        
-        if joint_angles.dim() == 1:
-            joint_angles = joint_angles.unsqueeze(0)  # Add batch dimension
-            
-        # Convert to numpy for cdf_evaluate_model
-        points_np = points.cpu().numpy()
-        joint_angles_np = joint_angles.cpu().numpy()
-        
-        # Get CDF values
-        cdf_values = cdf_evaluate_model(self.model, joint_angles_np, points_np, self.device)
-        
-        # Convert back to tensor
-        cdf_values = torch.tensor(cdf_values, device=self.device)
-        
-        # Truncate values larger than truncation_value
-        cdf_values = torch.clamp(cdf_values, max=self.truncation_value)
-        
-        return cdf_values
 
-def plan_and_visualize(robot_cdf, obstacles, initial_config, goal_configs, max_bubble_samples=500):
-    """Plan and visualize a path using the bubble planner"""
-    print("\nStarting planning process...")
-    # Set random seed for reproducibility
-    seed = 42
+def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
+                      max_bubble_samples=500, seed=42, early_termination=False, 
+                      planner_type='bubble'):
+    """
+    Plan and visualize a path using different planners
     
-    # Initialize bubble planner
+    Args:
+        planner_type: str, one of ['bubble', 'bubble_connect', 'cdf_rrt', 'sdf_rrt']
+    """
+    print(f"\nStarting planning process with planner: {planner_type}...")
+    
+    # Set random seed for reproducibility
     joint_limits = (
         np.full_like(initial_config, -np.pi),  # lower bounds
         np.full_like(initial_config, np.pi)    # upper bounds
     )
-    planner = BubblePlanner(robot_cdf, joint_limits, max_samples=max_bubble_samples, device=robot_cdf.device, seed=seed, planner_type='bubble')
     
     # Get obstacle points
     obstacle_points = torch.tensor(concatenate_obstacle_list(obstacles), 
                                  device=robot_cdf.device)
     print(f"Obstacle points shape: {obstacle_points.shape}")
     
-    # Plan path (goal_configs is already a list of numpy arrays)
-    result = planner.plan(initial_config, goal_configs, obstacle_points)
+    if planner_type in ['bubble', 'bubble_connect']:
+        # Use bubble planner
+        planner = BubblePlanner(
+            robot_cdf, joint_limits, max_samples=max_bubble_samples, 
+            device=robot_cdf.device, seed=seed, planner_type=planner_type, 
+            early_termination=early_termination
+        )
+        result = planner.plan(initial_config, goal_configs, obstacle_points)
+        
+    elif planner_type in ['cdf_rrt', 'sdf_rrt']:
+        # Use OMPL RRT planner
+        # Choose which robot model to use for collision checking
+        
+        planner = OMPLRRTPlanner(
+            robot_sdf=robot_sdf,  # sdf model
+            robot_cdf=robot_cdf,  # cdf model
+            robot_fk=None,  # Not needed for 2D case
+            joint_limits=joint_limits,
+            planner_type='rrt',
+            device=robot_cdf.device,
+            seed=seed,
+            safety_margin=0.05
+        )
+        
+        # Try each goal configuration until success or all failed
+        result = None
+        result = planner.plan(
+            start_config=initial_config,
+            goal_configs=goal_configs,
+            obstacle_points=obstacle_points,
+            max_time=10.0
+            )
+        
+        if result is None or not result['metrics'].success:
+            print("Planning failed for all goal configurations!")
+            return None
+    
+    else:
+        raise ValueError(f"Unknown planner type: {planner_type}")
     
     if result is None:
         print("Planning failed!")
@@ -100,45 +110,68 @@ def plan_and_visualize(robot_cdf, obstacles, initial_config, goal_configs, max_b
     print(f"Number of samples: {metrics.num_samples}")
     print(f"Path length: {metrics.path_length:.2f}")
     print(f"Number of collision checks: {metrics.num_collision_checks}")
-    print(f"Reached goal index: {metrics.reached_goal_index}")
-    # Create visualization
-    visualize_results(obstacles, initial_config, goal_configs[metrics.reached_goal_index], 
-                     trajectory, result['bezier_curves'], src_dir=src_dir)
+    if hasattr(metrics, 'reached_goal_index'):
+        print(f"Reached goal index: {metrics.reached_goal_index}")
     
-    # Add CDF planning visualization
-    visualize_cdf_planning(robot_cdf, initial_config, goal_configs, 
-                         trajectory, result['bubbles'], 
-                         obstacle_points, src_dir)
+    # Create visualization
+
+
+    if planner_type in ['bubble', 'bubble_connect']:
+        visualize_results(obstacles, initial_config, goal_configs[metrics.reached_goal_index], 
+                         trajectory, src_dir=src_dir)
+        
+        visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, 
+                                    trajectory, result['bubbles'], 
+                                    obstacle_points, src_dir, planner_type=planner_type)
+    else:  # cdf_rrt or sdf_rrt
+        visualize_results(obstacles, initial_config, goal_configs[metrics.reached_goal_index], 
+                         trajectory, src_dir=src_dir)
+        
+        visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_configs, 
+                                  trajectory, obstacle_points, src_dir, 
+                                  planner_type=planner_type)
     
     return result
 
 if __name__ == "__main__":
-
-
-    trained_model_path = os.path.join(src_dir, "trained_models/cdf_models/cdf_model_2_links_truncated_new.pt")  # Adjust path as needed
-    torch_model = load_learned_cdf(trained_model_path)
+    # Set all random seeds
+    seed = 10
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    
+    rng = np.random.default_rng(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    rng = np.random.default_rng(12345)
 
     # Create obstacles
     obstacles = create_obstacles(rng=rng)
 
-    robot_cdf = RobotCDF(torch_model, device, truncation_value=0.3)
+    # Initialize RobotCDF and RobotSDF classes
+    robot_cdf = RobotCDF(device=device)
+    robot_sdf = RobotSDF(device=device)
+    
     # Make sure the figures directory exists
     os.makedirs(os.path.join(src_dir, 'figures'), exist_ok=True)
 
-    # Set initial and goal configurations
+    # Set initial configuration and goal position
     initial_config = np.array([0., 0.], dtype=np.float32)
-    goal_configs = [
-        np.array([2., 2.], dtype=np.float32),     # First goal
-        np.array([1., -2.], dtype=np.float32)     # Second goal
-    ]
+    goal_pos = np.array([-2.5, 2.5], dtype=np.float32)     # Single goal position for end-effector
 
-    # Plan and visualize with multiple goals
-    result = plan_and_visualize(robot_cdf, obstacles, initial_config, goal_configs)
+    # find multiple goal configurations by inverse kinematics
+    goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
 
-    # Save planning result for control script
-    # if result is not None:
-    #     np.save(os.path.join(src_dir, 'planned_path.npy'), result)
+    # Test different planners: bubble, bubble_connect, cdf_rrt, sdf_rrt
+    planner = 'bubble'
+    result = plan_and_visualize(
+            robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
+            max_bubble_samples=200, seed=seed, early_termination=True, 
+            planner_type=planner
+        )
+
+
+
+
 

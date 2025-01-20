@@ -1,132 +1,95 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import jax
-import jax.numpy as jnp
-from jax import grad, jit, vmap
+from typing import Tuple, List
 
 
-@jit
-def forward_kinematics_jax(q, link_lengths):
-    x = jnp.zeros(len(link_lengths) + 1)
-    y = jnp.zeros(len(link_lengths) + 1)
-    current_angle = 0
-    for i in range(len(link_lengths)):
-        current_angle += q[i]
-        x = x.at[i+1].set(x[i] + link_lengths[i] * jnp.cos(current_angle))
-        y = y.at[i+1].set(y[i] + link_lengths[i] * jnp.sin(current_angle))
+def forward_kinematics_analytical(theta1: float, theta2: float, l1: float = 2.0, l2: float = 2.0) -> Tuple[float, float]:
+    """
+    Compute forward kinematics for a 2-link planar arm
+    
+    Args:
+        theta1: angle of first joint (rad)
+        theta2: angle of second joint (rad)
+        l1: length of first link (default 2.0)
+        l2: length of second link (default 2.0)
+    
+    Returns:
+        (x, y): end-effector position
+    """
+    x = l1 * np.cos(theta1) + l2 * np.cos(theta1 + theta2)
+    y = l1 * np.sin(theta1) + l2 * np.sin(theta1 + theta2)
     return x, y
 
-@jit
-def forward_kinematics(q):
-    # Initialize position
-    x, y = 0.0, 0.0
-    current_angle = 0.0
-    link_length = 2.0  # Fixed link length
-
-    # Compute the end-effector position
-    for angle in q:
-        current_angle += angle
-        x += link_length * jnp.cos(current_angle)
-        y += link_length * jnp.sin(current_angle)
-
-    return jnp.array([x, y])
-
-@jit
-def point_to_segment_distance_jax(p, a, b):
-    ab = b - a
-    ap = p - a
-    proj = jnp.dot(ap, ab) / jnp.dot(ab, ab)
-    proj = jnp.clip(proj, 0, 1)
-    closest = a + proj * ab
-    return jnp.linalg.norm(p - closest)
-
-@jax.jit
-def point_to_segment_distance_jax(points, segment_start, segment_end):
-    """Calculate the minimum distance from points to a line segment using JAX.
+def inverse_kinematics_analytical(x: float, y: float, l1: float = 2.0, l2: float = 2.0) -> List[np.ndarray]:
+    """
+    Compute inverse kinematics for a 2-link planar arm
     
     Args:
-        points: Array of shape (N, 2) containing obstacle points
-        segment_start: Array of shape (2,) containing segment start point
-        segment_end: Array of shape (2,) containing segment end point
+        x: desired end-effector x position
+        y: desired end-effector y position
+        l1: length of first link (default 2.0)
+        l2: length of second link (default 2.0)
     
     Returns:
-        Array of shape (N,) containing distances from each point to the segment
+        List of possible configurations [theta1, theta2] that reach the target
+        Empty list if no solution exists
     """
-    segment = segment_end - segment_start
-    length_sq = jnp.sum(segment**2)
+    solutions = []
     
-    t = jnp.clip(
-        jnp.sum((points - segment_start) * segment, axis=1) / length_sq,
-        0, 1
-    )
+    # Distance from base to target
+    r = np.sqrt(x**2 + y**2)
     
-    # Calculate projection points
-    # Shape: (N, 2)
-    projections = segment_start[None, :] + t[:, None] * segment[None, :]
+    # Check if target is reachable
+    if r > l1 + l2 or r < abs(l1 - l2):
+        print(f"Target position ({x}, {y}) is not reachable!")
+        return solutions
     
-    # Calculate distances
-    # Shape: (N,)
-    distances = jnp.linalg.norm(points - projections, axis=1)
+    # Compute theta2 using cosine law
+    cos_theta2 = (x**2 + y**2 - l1**2 - l2**2) / (2 * l1 * l2)
+    if cos_theta2 > 1 or cos_theta2 < -1:
+        print(f"No solution exists for target ({x}, {y})")
+        return solutions
     
-    return distances
+    # Two possible solutions for theta2 (elbow-up and elbow-down)
+    theta2_1 = np.arccos(cos_theta2)
+    theta2_2 = -theta2_1
+    
+    # Compute corresponding theta1 values
+    for theta2 in [theta2_1, theta2_2]:
+        # Using atan2 for correct quadrant
+        k1 = l1 + l2 * np.cos(theta2)
+        k2 = l2 * np.sin(theta2)
+        theta1 = np.arctan2(y, x) - np.arctan2(k2, k1)
+        
+        # Normalize angles to [-pi, pi]
+        theta1 = np.mod(theta1 + np.pi, 2 * np.pi) - np.pi
+        theta2 = np.mod(theta2 + np.pi, 2 * np.pi) - np.pi
+        
+        solutions.append(np.array([theta1, theta2], dtype=np.float32))
+    
+    return solutions
 
-@jax.jit
-def compute_robot_distances(configurations, obstacle_points):
-    """Compute minimum distances from obstacles to robot segments.
+def test_kinematics():
+    """Test the kinematics implementations"""
+    # Test some positions
+    test_positions = [
+        (2.0, 2.0),
+        (0.0, 3.0),
+        (-2.0, 2.0),
+        (1.0, -1.0)
+    ]
     
-    Args:
-        configurations: Array of shape (B, 2) or (2,) containing joint angles
-        obstacle_points: Array of shape (N, 2) containing obstacle points
-    
-    Returns:
-        Array of shape (B, N) or (N,) containing minimum distances
-    """
-    # Add batch dimension if single configuration
-    if configurations.ndim == 1:
-        configurations = configurations[None, :]
-    
-    def get_segment_positions(q):
-        # Base position
-        joint1_pos = jnp.array([0., 0.])
+    print("\nTesting kinematics functions:")
+    for x, y in test_positions:
+        print(f"\nTarget position: ({x}, {y})")
+        solutions = inverse_kinematics_analytical(x, y)
         
-        # First joint position
-        angle1 = q[0]
-        joint2_pos = jnp.array([
-            2.0 * jnp.cos(angle1),
-            2.0 * jnp.sin(angle1)
-        ])
-        
-        # End effector position
-        end_pos = forward_kinematics(q)
-        
-        return joint1_pos, joint2_pos, end_pos
-    
-    # Vectorize over all configurations
-    get_positions_vmap = jax.vmap(get_segment_positions)
-    joint1_positions, joint2_positions, end_positions = get_positions_vmap(configurations)
-    
-    # Compute distances to both segments for all configurations
-    segment1_distances = jax.vmap(
-        lambda j1, j2: point_to_segment_distance_jax(
-            obstacle_points, 
-            j1,
-            j2
-        )
-    )(joint1_positions, joint2_positions)
-    
-    segment2_distances = jax.vmap(
-        lambda j2, ee: point_to_segment_distance_jax(
-            obstacle_points,
-            j2,
-            ee
-        )
-    )(joint2_positions, end_positions)
-    
-    # Take minimum distance to either segment
-    min_distances = jnp.minimum(segment1_distances, segment2_distances)
-    
-    # Remove batch dimension if input was single configuration
-    if configurations.shape[0] == 1:
-        min_distances = min_distances[0]
-    
-    return min_distances
+        for i, sol in enumerate(solutions):
+            print(f"Solution {i+1}: theta1 = {sol[0]:.3f}, theta2 = {sol[1]:.3f}")
+            
+            # Verify solution using forward kinematics
+            x_check, y_check = forward_kinematics_analytical(sol[0], sol[1])
+            error = np.sqrt((x - x_check)**2 + (y - y_check)**2)
+            print(f"FK check: ({x_check:.3f}, {y_check:.3f}), error: {error:.6f}")
+
+if __name__ == "__main__":
+    test_kinematics()

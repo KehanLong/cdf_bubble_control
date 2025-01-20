@@ -18,6 +18,8 @@ from train_online_batch import compute_cdf_values
 
 from train_online_batch import CDFTrainer
 
+src_dir = project_root
+
 def evaluate_sdf_cdf_correlation(device='cuda'):
     """
     Evaluate correlation between SDF and CDF values with visualization
@@ -29,7 +31,7 @@ def evaluate_sdf_cdf_correlation(device='cuda'):
     visualizer = SDFVisualizer(device=device)
     
     # Load contact database
-    contact_db_path = "data/cdf_data/refined_bfgs_100_contact_db.npy"
+    contact_db_path = src_dir / "data/cdf_data/refined_bfgs_100_contact_db.npy"
     contact_db = np.load(contact_db_path, allow_pickle=True).item()
     valid_points = torch.tensor(contact_db['points'], device=device)
     contact_configs = contact_db['contact_configs']
@@ -256,8 +258,6 @@ def evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt
 
 if __name__ == "__main__":
     # Create evaluation dataset (only need to run once)
-
-    src_dir = project_root
     
     save_path = os.path.join(src_dir, 'data/cdf_data/evaluation_dataset_large.pt')
     # create_evaluation_dataset(batch_q_size=200, batch_x_size=400, device='cuda', save_path=save_path)
@@ -267,6 +267,6 @@ if __name__ == "__main__":
     metrics = evaluate_quantitative(eval_dataset_path=eval_dataset_path)
     
     # Qualitative evaluation (commented out by default)
-    # evaluate_sdf_cdf_correlation()
+    evaluate_sdf_cdf_correlation()
 
 

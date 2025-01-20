@@ -1,9 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import jax.numpy as jnp
+import torch
 from typing import List, Tuple, Optional
 import random
-from jax import vmap, jit
 
 def create_circle(center: Tuple[float, float], radius: float, num_points: int = 100) -> np.ndarray:
     theta = np.linspace(0, 2*np.pi, num_points)
@@ -46,26 +45,26 @@ def create_obstacles(num_points: int = 50, rng=None) -> List[np.ndarray]:
         x_range, y_range = {
             1: ((2, 3), (2, 3)),
             2: ((2, 3), (-2.5, -1.5)),
-            3: ((-4, -2), (-4, -3)),
-            4: ((-3, -2), (3, 4))
+            3: ((-3, -2), (-2.5, -2)),
+            4: ((-3.5, -3.1), (3.1, 3.5))
         }[quadrant]
         return rng.uniform(*x_range), rng.uniform(*y_range)
 
     # Obstacle 1: Circle in first quadrant
     center = random_position(1)
-    obstacles.append(create_circle(center, radius=rng.uniform(0.3, 0.6), num_points=num_points))
+    obstacles.append(create_circle(center, radius=rng.uniform(0.6, 0.8), num_points=num_points))
 
     # Obstacle 2: Ellipse in 4th quadrant
     center = random_position(2)
-    obstacles.append(create_ellipse(center, a=rng.uniform(0.5, 0.8), b=rng.uniform(0.2, 0.5), 
+    obstacles.append(create_ellipse(center, a=rng.uniform(0.7, 0.8), b=rng.uniform(0.4, 0.6), 
                                     angle=rng.uniform(0, np.pi), num_points=num_points))
     #obstacles.append(create_circle(center, radius=rng.uniform(0.3, 0.6), num_points=num_points))
 
     # Obstacle 3: Triangle in third quadrant
     center = random_position(3)
     vertices = [
-        (center[0] - random.uniform(0.5, 0.8), center[1] - random.uniform(0.5, 0.8)),
-        (center[0] + random.uniform(0.5, 0.8), center[1] - random.uniform(0.5, 0.8)),
+        (center[0] - random.uniform(0.7, 0.9), center[1] - random.uniform(0.5, 0.8)),
+        (center[0] + random.uniform(0.7, 0.9), center[1] - random.uniform(0.5, 0.8)),
         (center[0] + random.uniform(-0.3, 0.3), center[1] + random.uniform(0.5, 0.8))
     ]
     obstacles.append(create_polygon(vertices, num_points=num_points))
@@ -142,91 +141,24 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray,
     
     return fig, ax
 
-def visualize_simple_sdf_theta1_theta2(obstacles, resolution=200, save_path='simple_sdf_theta1_theta2_visualization.png'):
-    fig, ax = plt.subplots(figsize=(15, 15), dpi=300)
-    
-    # Generate angles for theta1 and theta2
-    theta1_range = jnp.linspace(-jnp.pi, jnp.pi, resolution)
-    theta2_range = jnp.linspace(-jnp.pi, jnp.pi, resolution)
-    theta1_mesh, theta2_mesh = jnp.meshgrid(theta1_range, theta2_range)
-    
-    # Flatten the meshgrid for vectorized computation
-    theta1_flat = theta1_mesh.flatten()
-    theta2_flat = theta2_mesh.flatten()
-    
-    @jit
-    def forward_kinematics(theta1, theta2):
-        x1 = 2 * jnp.cos(theta1)
-        y1 = 2 * jnp.sin(theta1)
-        x2 = x1 + 2 * jnp.cos(theta1 + theta2)
-        y2 = y1 + 2 * jnp.sin(theta1 + theta2)
-        return jnp.array([[0, x1, x2], [0, y1, y2]])
-
-    @jit
-    def point_to_segment_distance(p, a, b):
-        ab = b - a
-        ap = p - a
-        proj = jnp.dot(ap, ab) / jnp.dot(ab, ab)
-        proj = jnp.clip(proj, 0, 1)
-        closest = a + proj * ab
-        return jnp.linalg.norm(p - closest)
-
-    @jit
-    def calculate_sdf(theta1, theta2, obstacle_points):
-        arm_points = forward_kinematics(theta1, theta2)
-        
-        d1 = vmap(lambda p: point_to_segment_distance(p, arm_points[:, 0], arm_points[:, 1]))(obstacle_points)
-        d2 = vmap(lambda p: point_to_segment_distance(p, arm_points[:, 1], arm_points[:, 2]))(obstacle_points)
-        
-        return jnp.min(jnp.minimum(d1, d2))
-
-    # Combine all obstacle points
-    all_obstacle_points = jnp.concatenate(obstacles, axis=0)
-
-    # Vectorize SDF calculation over all configurations
-    vectorized_sdf = vmap(lambda t1, t2: calculate_sdf(t1, t2, all_obstacle_points))
-    
-    # Calculate SDF for all configurations
-    sdf_values = vectorized_sdf(theta1_flat, theta2_flat).reshape(resolution, resolution)
-
-    # Plot the heatmap
-    heatmap = ax.imshow(sdf_values, extent=[-jnp.pi, jnp.pi, -jnp.pi, jnp.pi], origin='lower', 
-                        aspect='auto', cmap='viridis')
-    
-    # Highlight the 0.05 level set
-    level_set = ax.contour(theta1_mesh, theta2_mesh, sdf_values, levels=[0.05], colors='red', linewidths=2)
-    ax.clabel(level_set, inline=True, fmt='0.05', colors='red', fontsize=10)
-    
-    ax.set_xlabel('Theta 1 (radians)')
-    ax.set_ylabel('Theta 2 (radians)')
-    ax.set_title('Simple SDF Visualization for Theta 1 and Theta 2')
-    
-    cbar = fig.colorbar(heatmap, ax=ax)
-    cbar.set_label('Minimum Distance to Obstacles')
-    
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"Figure saved as {save_path}")
-
-@jit
 def forward_kinematics(joint_angles):
+    # Convert input to torch tensor if it's not already
+    if not isinstance(joint_angles, torch.Tensor):
+        joint_angles = torch.tensor(joint_angles, dtype=torch.float32)
+    
     num_links = len(joint_angles)
     link_length = 2.0  # Assuming each link has a length of 2 units
     
     # Initialize arrays to store x and y coordinates
-    x = jnp.zeros(num_links + 1)
-    y = jnp.zeros(num_links + 1)
-    
-    # Calculate cumulative angle
-    cumulative_angle = jnp.cumsum(joint_angles)
+    x = torch.zeros(num_links + 1)
+    y = torch.zeros(num_links + 1)
     
     # Calculate x and y positions for each joint
     for i in range(1, num_links + 1):
-        x = x.at[i].set(x[i-1] + link_length * jnp.cos(jnp.sum(joint_angles[:i])))
-        y = y.at[i].set(y[i-1] + link_length * jnp.sin(jnp.sum(joint_angles[:i])))
+        x[i] = x[i-1] + link_length * torch.cos(torch.sum(joint_angles[:i]))
+        y[i] = y[i-1] + link_length * torch.sin(torch.sum(joint_angles[:i]))
     
-    return x, y
+    return x.numpy(), y.numpy()
 
 def main():
 
@@ -238,7 +170,8 @@ def main():
     arm_angles = np.array([0, 0])
 
     # Plot the environment
-    plot_environment(obstacles, arm_angles)
+    fig, ax = plot_environment(obstacles, arm_angles)
+    plt.show()
 
     print("Sample obstacles created:")
     for i, obstacle in enumerate(obstacles):
@@ -246,10 +179,6 @@ def main():
 
     print(f"\nSample arm configuration: {arm_angles}")
     
-    # Visualize SDF for theta1 and theta2
-    # visualize_sdf_theta1_theta2(params_list, obstacles)
-
-    visualize_simple_sdf_theta1_theta2(obstacles)
 
 
 if __name__ == "__main__":

@@ -93,8 +93,8 @@ class CDFTrainer:
         self.q_min = self.robot_fk.joint_limits[:, 0]
         
         self.device = device
-        self.batch_x = 200
-        self.batch_q = 100
+        self.batch_x = 50
+        self.batch_q = 10
         self.max_q_per_link = 100
 
     def sample_q(self, batch_q=None):
@@ -165,8 +165,8 @@ def train_cdf_network(
         print(f"Loading pretrained model from: {pretrained_model}")
         model.load_state_dict(torch.load(pretrained_model))
         # Create new filenames for continued training
-        model_filename = f'best_model_bfgs_{activation}_3.pth'
-        final_model_filename = f'final_model_bfgs_{activation}_3.pth'
+        model_filename = f'best_model_bfgs_{activation}_4.pth'
+        final_model_filename = f'final_model_bfgs_{activation}_4.pth'
     else:
         model_filename = f'best_model_bfgs_{activation}.pth'
         final_model_filename = f'final_model_bfgs_{activation}_final.pth'
@@ -174,7 +174,7 @@ def train_cdf_network(
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=50,
+        optimizer, mode='min', factor=0.5, patience=2000,
         threshold=0.01, verbose=True
     )
     
@@ -254,13 +254,13 @@ if __name__ == "__main__":
     model_save_dir = src_dir / "trained_models/cdf"
 
 
-    pretrained_model = src_dir / "trained_models/cdf/best_model_bfgs_gelu_2.pth"
+    pretrained_model = src_dir / "trained_models/cdf/best_model_bfgs_gelu_3.pth"
     
     model, final_loss = train_cdf_network(
         contact_db_path=contact_db_path,
         model_save_dir=model_save_dir,
-        num_epochs=300,
-        learning_rate=0.002,  
+        num_epochs=30000,
+        learning_rate=0.001,  
         device='cuda',
         loss_threshold=1e-4,
         activation='gelu',

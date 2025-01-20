@@ -57,7 +57,7 @@ def create_multigoal_sampler(mins, maxs, goal_configs, p0=0.2, rng=None):
 
 if __name__ == "__main__":
     # Parameters
-    num_test_positions = 400
+    num_test_positions = 1000
     epsilon = 0.1
     minimum_radius = 0.1
     max_retry = 100
@@ -101,13 +101,15 @@ if __name__ == "__main__":
             mins,
             maxs,
             start_position,
+            end_point=goal_positions,
             batch_size=100,
             max_retry=max_retry,
             max_retry_epsilon=max_retry_epsilon,
             inflate_factor=inflate_factor,
             sample_fn=sampler,  # Use our custom sampler
             rng=rng,
-            profile=False
+            profile=False,
+            early_termination=True
         )
 
         goal_connections = []
@@ -147,7 +149,8 @@ if __name__ == "__main__":
         inflate_factor=inflate_factor,
         prc=p0,
         rng=rng,
-        profile=False
+        profile=True,
+        early_termination=False
         )
         goal_connections = []
         for goal_idx, goal_position in enumerate(goal_positions):
