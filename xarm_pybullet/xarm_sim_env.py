@@ -5,7 +5,16 @@ import torch
 from robot_sdf import RobotSDF
 import time
 import os
+from dataclasses import dataclass
+from typing import List
 
+
+@dataclass
+class IKSolution:
+    joint_angles: np.ndarray
+    task_dist: float
+    min_sdf: float
+    min_cdf: float = 1.0
 
 class XArmEnvironment:
     def __init__(self, gui=True, add_default_objects=True, add_dynamic_obstacles=True):
@@ -58,6 +67,8 @@ class XArmEnvironment:
             )
 
         self.debug_ids = None  # Single ID for all debug points
+        
+
 
     def add_default_objects(self):
         """Add default obstacles to the environment"""
@@ -421,6 +432,21 @@ class XArmEnvironment:
             downsampled_points = downsampled_points[selected_indices]
         
         return downsampled_points
+    
+
+    def create_goal_marker(self, goal_pos):
+        """Create a visible marker for the goal position"""
+        self.goal_marker = p.createVisualShape(
+            p.GEOM_SPHERE,
+            radius=0.02,
+            rgbaColor=[0, 1, 0, 0.7]  # Green, semi-transparent
+        )
+        
+        self.goal_visual = p.createMultiBody(
+            baseVisualShapeIndex=self.goal_marker,
+            basePosition=goal_pos.cpu().numpy(),
+            baseOrientation=[0, 0, 0, 1]
+        )
 
     def step(self):
         """Step the simulation"""
@@ -447,15 +473,193 @@ class XArmEnvironment:
         """Disconnect from PyBullet"""
         p.disconnect(self.client)
 
+    def set_ik_parameters(self, max_iterations: int = 100, 
+                         threshold: float = 0.01,
+                         max_solutions: int = 10):
+        """Set IK solver parameters"""
+        self.ik_max_iterations = max_iterations
+        self.ik_threshold = threshold
+        self.ik_max_solutions = max_solutions
+    
+    def find_ik_solutions(self, 
+                         target_pos: np.ndarray,  # Target position in robot base frame
+                         visualize: bool = False,
+                         pause_time: float = 1.0,
+                         seed: int = None  # Add seed parameter
+                         ) -> List[IKSolution]:
+        """
+        Find multiple IK solutions for a given target position
+        
+        Args:
+            target_pos: Target position in world frame [x, y, z]
+            visualize: Whether to visualize solutions
+            pause_time: Time to pause between visualizing solutions
+            seed: Random seed for reproducibility (default: None)
+        
+        Returns:
+            List of valid IK solutions
+        """
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+        
+        valid_solutions = []
+        
+        # Convert target position to world frame for PyBullet IK
+        target_world = target_pos + torch.tensor(self.robot_base_pos, device=self.device)
+        
+        # Save current state to restore later
+        state_id = p.saveState()
+        
+        # Try multiple orientations to get diverse solutions
+        orientations = [
+            p.getQuaternionFromEuler([0, np.pi, 0]),     # Downward
+            p.getQuaternionFromEuler([0, np.pi/2, 0]),   # Horizontal
+            p.getQuaternionFromEuler([0, 3*np.pi/4, 0]), # 45 degrees
+            p.getQuaternionFromEuler([0, np.pi/4, 0]),   # -45 degrees
+        ]
+        
+        # Get point cloud for collision checking
+        points_robot = self.get_static_point_cloud()
+        
+        for orientation in orientations:
+            for _ in range(max(1, self.ik_max_iterations // len(orientations))):
+                # Calculate IK using world frame position
+                joint_poses = p.calculateInverseKinematics(
+                    self.robot_id,
+                    endEffectorLinkIndex=7,  # xarm_gripper_base_link
+                    targetPosition=target_world,
+                    targetOrientation=orientation,
+                    maxNumIterations=100,
+                    residualThreshold=self.ik_threshold
+                )
+                
+                # Validate configuration
+                config = joint_poses[:6]  # Get first 6 joint angles
+                
+                # Check task space accuracy (convert back to robot base frame for comparison)
+                self._set_robot_configuration(config)
+                current_pos_world = self._get_ee_position()
+                current_pos_base = current_pos_world - np.array(self.robot_base_pos)
+                task_dist = np.linalg.norm(target_pos.detach().cpu().numpy() - current_pos_base)  # Compare in base frame
+                
+                if task_dist > self.ik_threshold:
+                    continue
+                
+                # Check collisions using SDF
+                min_sdf = 1.0
+                
+                if self.sdf_model is not None:
+                    config_tensor = torch.tensor(config, device=self.device, dtype=torch.float32)
+                    
+                    sdf_values = self.sdf_model.query_sdf(
+                        points=points_robot,
+                        joint_angles=config_tensor.unsqueeze(0),
+                        return_gradients=False
+                    )
+                    min_sdf = sdf_values.min().item()
+                
+                # Add valid solution
+                if min_sdf > 0:
+                    solution = IKSolution(
+                        joint_angles=config,
+                        task_dist=task_dist,
+                        min_sdf=min_sdf
+                    )
+                    valid_solutions.append(solution)
+                    
+                    if visualize:
+                        print(f"\nFound solution {len(valid_solutions)}:")
+                        print(f"Task distance: {task_dist:.4f}")
+                        print(f"Min SDF: {min_sdf:.4f}")
+                        print(f"Joint angles: {config}")
+                        time.sleep(pause_time)
+                    
+                    if len(valid_solutions) >= self.ik_max_solutions:
+                        break
+            
+            if len(valid_solutions) >= self.ik_max_solutions:
+                break
+        
+        # Restore original state
+        p.restoreState(state_id)
+        p.removeState(state_id)
+        
+        return valid_solutions
+    
+    def _set_robot_configuration(self, joint_angles: np.ndarray):
+        """Set robot joint angles"""
+        for i in range(6):
+            p.resetJointState(self.robot_id, i+1, joint_angles[i])
+    
+    def _get_ee_position(self) -> np.ndarray:
+        """Get end-effector position in world frame"""
+        link_state = p.getLinkState(self.robot_id, 7)  # xarm_gripper_base_link
+        return np.array(link_state[0])
+
+    def print_robot_info(self):
+        """Print information about robot joints and links"""
+        num_joints = p.getNumJoints(self.robot_id)
+        print(f"\nRobot has {num_joints} joints/links:")
+        print("-" * 50)
+        
+        for i in range(num_joints):
+            joint_info = p.getJointInfo(self.robot_id, i)
+            link_name = joint_info[12].decode('utf-8')
+            joint_name = joint_info[1].decode('utf-8')
+            joint_type = joint_info[2]  # 0=revolute, 1=prismatic, 4=fixed
+            
+            type_str = "REVOLUTE" if joint_type == p.JOINT_REVOLUTE else \
+                      "PRISMATIC" if joint_type == p.JOINT_PRISMATIC else \
+                      "FIXED" if joint_type == p.JOINT_FIXED else str(joint_type)
+            
+            print(f"Link Index: {i}")
+            print(f"Joint Name: {joint_name}")
+            print(f"Link Name: {link_name}")
+            print(f"Joint Type: {type_str}")
+            print("-" * 50)
+
 def main():
-    """Demo script showing environment usage"""
-    env = XArmEnvironment(gui=True)
+    """Demo script showing environment usage with IK"""
+    env = XArmEnvironment(gui=True, add_dynamic_obstacles=False)
+    
     try:
-        while True:
-            env.step()
-            points = env.get_full_point_cloud()
-            # print(points.shape)
-            time.sleep(0.01)  # Add small delay to see motion clearly
+        # Set IK parameters
+        env.set_ik_parameters(
+            max_iterations=2000,
+            threshold=0.05,
+            max_solutions=5
+        )
+        
+        # Test different target positions (in robot base frame)
+        test_positions = [
+            torch.tensor([0.7, 0.1, 0.6], device='cuda'),   # Front right
+            torch.tensor([0.2, 0.6, 0.6], device='cuda'),   # Front left
+            torch.tensor([0.4, 0.0, 1.0], device='cuda'),   # High center
+        ]
+        
+        for target_pos in test_positions:
+            print(f"\nTesting target position (robot base frame): {target_pos}")
+            
+            # Create goal marker (needs world frame)
+            env.create_goal_marker(target_pos + torch.tensor(env.robot_base_pos, device='cuda'))
+            
+            # Find and visualize solutions (pass in robot base frame)
+            solutions = env.find_ik_solutions(
+                target_pos=target_pos,  # Keep in robot base frame
+                visualize=True,
+                pause_time=1.0, 
+                seed=42
+            )
+            
+            print(f"Found {len(solutions)} valid solutions")
+            time.sleep(2)
+            
+            # Step simulation to show movement
+            for _ in range(100):
+                env.step()
+                time.sleep(0.01)
+    
     finally:
         env.close()
 

@@ -96,7 +96,7 @@ class BubblePlanner:
         self.device = device
         
         # Planning parameters
-        self.epsilon = 5E-2         
+        self.epsilon = 1E-1        
         self.min_radius = 1E-1     
         self.num_samples = max_samples             
         self.max_iterations = 5E4
@@ -136,6 +136,9 @@ class BubblePlanner:
     
         # if using sdf, use this
         # min_cdf = max(min_cdf * 5., 0.05)   # 0.1 for safety
+
+        # for xarm, use this
+        min_cdf = max(min_cdf + 0.1, 0.05)   # 0.1 for safety
 
         
         return min_cdf
@@ -261,6 +264,11 @@ class BubblePlanner:
         self.cdf_query_count = 0  # Reset counter
         
         try:
+            # goal_configs is a list containing a single list of configurations
+            # We need to extract the inner list
+            if isinstance(goal_configs, list) and len(goal_configs) == 1 and isinstance(goal_configs[0], list):
+                goal_configs = goal_configs[0]
+            
             # Generate bubbles with obstacle points
             overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_configs, obstacle_points)
 

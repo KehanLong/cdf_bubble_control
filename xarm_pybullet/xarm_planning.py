@@ -64,7 +64,8 @@ class PlanningMetrics:
     planning_time: float
 
 class XArmSDFVisualizer:
-    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='bubble_cdf', seed=5, dynamic_obstacles=False):
+    def __init__(self, ee_goal, use_gui=True, initial_horizon=8, planner_type='bubble_cdf', 
+                 seed=5, dynamic_obstacles=False, use_pybullet_inverse=True):
         """
         Initialize XArmSDFVisualizer
         
@@ -102,7 +103,7 @@ class XArmSDFVisualizer:
         self.robot_fk = XArmFK(device=self.device)
         self.robot_sdf = RobotSDF(device=self.device)
         self.robot_cdf = RobotCDF(device=self.device)
-        # Store goal configuration (in task space)
+        # Store goal pos (in task space)
         self.goal = ee_goal + self.base_pos
         self.initial_horizon = initial_horizon
         
@@ -153,14 +154,16 @@ class XArmSDFVisualizer:
                     self.robot_fk.joint_limits[:, 1].cpu().numpy()
                 ),
                 device=self.device,
+                max_samples=1e4,          # max number of bubbles in the graph
                 seed=seed,  # Pass seed to planner
-                planner_type='bubble_connect'     # planner type option: 'bubble' or 'bubble_connect'
+                planner_type='bubble',     # planner type option: 'bubble' or 'bubble_connect'
+                early_termination=False
             )
         else:
             raise ValueError(f"Unknown planner type: {planner_type}")
         
         # Create goal marker
-        self.create_goal_marker(self.goal)
+        self.env.create_goal_marker(self.goal)
         
         # Add end-effector marker
         # self.ee_marker = p.createVisualShape(
@@ -179,6 +182,12 @@ class XArmSDFVisualizer:
         self.points_robot = self.points_robot.to(dtype=torch.float32)
         while self.points_robot.dim() > 2:
             self.points_robot = self.points_robot.squeeze(0)
+
+        # Add IK solver parameters
+        self.use_pybullet_inverse = use_pybullet_inverse  # Default to random sampling
+        self.ik_iterations = 10000  # Default number of IK iterations
+        self.ik_threshold = 0.05  # Default threshold for IK solutions (in meters)
+        self.max_ik_solutions = 10  # Maximum number of IK solutions to find
 
     def set_robot_configuration(self, joint_angles):
         if isinstance(joint_angles, torch.Tensor):
@@ -202,19 +211,6 @@ class XArmSDFVisualizer:
             joint_states.append(state[0])
         return torch.tensor(joint_states, device=self.device)
 
-    def create_goal_marker(self, goal_config):
-        """Create a visible marker for the goal position"""
-        self.goal_marker = p.createVisualShape(
-            p.GEOM_SPHERE,
-            radius=0.02,
-            rgbaColor=[0, 1, 0, 0.7]  # Green, semi-transparent
-        )
-        
-        self.goal_visual = p.createMultiBody(
-            baseVisualShapeIndex=self.goal_marker,
-            basePosition=goal_config.cpu().numpy(),
-            baseOrientation=[0, 0, 0, 1]
-        )
 
     def get_ee_position(self, joint_angles):
         """Get end-effector position in world frame"""
@@ -256,77 +252,61 @@ class XArmSDFVisualizer:
             [0, 0, 0, 1]
         )
 
-    def _find_goal_configuration(self, goal_pos: torch.Tensor, n_samples: int = 1e6, threshold: float = 0.05, seed: int = None) -> Optional[np.ndarray]:
-        """
-        Find valid goal configurations for a given goal position using random sampling
-        
-        Args:
-            goal_pos: Target position in task space
-            n_samples: Number of samples to try
-            threshold: Distance threshold for considering a configuration valid
-            seed: Random seed for reproducibility
-        """
-        
+    def _find_goal_configuration(self, goal_pos: torch.Tensor, n_samples: int = 1e6, 
+                               threshold: float = 0.05) -> Optional[List[np.ndarray]]:
+        """Find valid goal configurations for a given goal position"""
         print(f"\nSearching for goal configurations:")
-        print(f"Target position: {goal_pos.cpu().numpy()}")
-        print(f"Using random seed: {seed}")
+        print(f"Using random seed: {self.seed}")
         
-        valid_solutions = find_goal_configuration(
-            goal_pos=goal_pos,
-            points_robot=self.points_robot,
-            robot_fk=self.robot_fk,
-            robot_sdf=self.robot_sdf,
-            robot_cdf=self.robot_cdf,
-            n_samples=int(n_samples),
-            threshold=threshold,
-            device=self.device,
-            max_solutions=1,
-            seed=seed  # Pass the seed to find_goal_configuration
-        )
-        
-        if not valid_solutions:
-            print("Failed to find any valid goal configurations")
-            return None
-        
-        # Get current configuration
-        current_config = self.get_current_joint_states().cpu().numpy()
-        
-        # Find configuration closest to current configuration in joint space
-        closest_idx = 0
-        min_joint_dist = float('inf')
-        
-        for i, (config, task_dist, min_sdf, min_cdf) in enumerate(valid_solutions):
-            joint_dist = np.linalg.norm(config - current_config)
-            if joint_dist < min_joint_dist:
-                min_joint_dist = joint_dist
-                closest_idx = i
-        
-        print(f"\nSelected configuration {closest_idx + 1}/{len(valid_solutions)}:")
-        print(f"Joint space distance: {min_joint_dist:.4f}")
-        config, task_dist, min_sdf, min_cdf = valid_solutions[closest_idx]
-        print(f"Task space distance: {task_dist:.4f} meters")
-        print(f"Minimum SDF value: {min_sdf:.4f}")
-        print(f"Minimum CDF value: {min_cdf:.4f}")
-        
-        # For visualization, show each configuration briefly
-        original_config = self.get_current_joint_states()
-        
-        print("\nVisualizing found configurations...")
-        for i, (config, task_dist, min_sdf, min_cdf) in enumerate(valid_solutions):
-            print(f"\nConfiguration {i+1}/{len(valid_solutions)}:")
-            print(f"Task space distance: {task_dist:.4f} meters")
-            print(f"Joint space distance: {np.linalg.norm(config - current_config):.4f}")
-            print(f"Minimum SDF value: {min_sdf:.4f}")
-            print(f"Minimum CDF value: {min_cdf:.4f}")
-            self.set_robot_configuration(config)
-            time.sleep(4)  # Show each config for 1 second
-        
-        # Reset to original configuration
-        print("\nResetting to original configuration...")
-        self.set_robot_configuration(original_config)
-        
-        # Return the configuration closest to current configuration in joint space
-        return valid_solutions[closest_idx][0]
+        if self.use_pybullet_inverse:
+            # Use environment's IK solver
+            
+                # Add IK parameters
+            ik_max_iterations = 2000
+            ik_threshold = 0.05
+            ik_max_solutions = 5
+
+            self.env.set_ik_parameters(ik_max_iterations, ik_threshold, ik_max_solutions)
+            solutions = self.env.find_ik_solutions(
+                target_pos=goal_pos,  # Already in robot base frame
+                visualize=True,
+                pause_time=1.0,
+                seed=self.seed
+            )
+            
+            if not solutions:
+                print("Failed to find any valid goal configurations")
+                return None
+            
+            # Convert tuples to numpy arrays
+            goal_configs = [np.array(solution.joint_angles, dtype=np.float32) for solution in solutions]
+            
+            print(f"\nFound {len(goal_configs)} valid goal configurations")
+            for i, solution in enumerate(solutions):
+                print(f"\nSolution {i+1}:")
+                print(f"Task distance: {solution.task_dist:.4f}")
+                print(f"Min SDF: {solution.min_sdf:.4f}")
+                print(f"Joint angles: {goal_configs[i]}")
+            
+            return goal_configs
+        else:
+            # Use existing random sampling method
+            goals = find_goal_configuration(
+                goal_pos=goal_pos,
+                points_robot=self.points_robot,
+                robot_fk=self.robot_fk,
+                robot_sdf=self.robot_sdf,
+                robot_cdf=self.robot_cdf,
+                n_samples=int(n_samples),
+                threshold=threshold,
+                device=self.device,
+                max_solutions=self.max_ik_solutions,
+                seed=self.seed
+            )
+            if goals is None:
+                return None
+            # Convert to list of numpy arrays if needed
+            return [np.array(g, dtype=np.float32) for g in goals]
     
     def _capture_frame(self, step: int, time_steps: int, width: int, height: int) -> np.ndarray:
         """Capture a frame using a rotating camera"""
@@ -459,7 +439,7 @@ class XArmSDFVisualizer:
             try:
                 trajectory_whole = self.bubble_planner.plan(
                     start_config=current_state,
-                    goal_configs=[goal_config],  # Wrap goal_config in a list
+                    goal_configs=goal_config,  # Wrap goal_config in a list
                     obstacle_points=self.points_robot
                 )
 
@@ -603,12 +583,13 @@ class XArmSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage for comparison
-    goal_pos = torch.tensor([0.7, 0.2, 0.6], device='cuda')     
+    goal_pos = torch.tensor([0.7, 0.1, 0.6], device='cuda')     
 
-    # example goal pos: [0.7, 0.2, 0.6],  [0.2, 0.6, 0.6]    
+    # example goal pos: [0.7, 0.1, 0.6],  [0.2, 0.6, 0.6]    
 
     seed = 42
-    visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble_cdf', seed=seed)  # baselines: 'rrt', 'rrt_connect', 'mppi'
+    visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble_cdf', 
+                                   seed=seed, use_pybullet_inverse=True)  # baselines: 'rrt', 'rrt_connect', 'mppi'
 
     # single demo
     visualizer.run_demo(execute_trajectory=True)  
