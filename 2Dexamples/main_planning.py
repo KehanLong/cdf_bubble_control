@@ -68,17 +68,26 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
     elif planner_type in ['cdf_rrt', 'sdf_rrt']:
         # Use OMPL RRT planner
         # Choose which robot model to use for collision checking
-        
-        planner = OMPLRRTPlanner(
-            robot_sdf=robot_sdf,  # sdf model
-            robot_cdf=robot_cdf,  # cdf model
-            robot_fk=None,  # Not needed for 2D case
-            joint_limits=joint_limits,
-            planner_type='rrt',
-            device=robot_cdf.device,
-            seed=seed,
-            safety_margin=0.05
-        )
+        if planner_type == 'cdf_rrt':
+            planner = OMPLRRTPlanner(
+                robot_sdf=robot_sdf,  # sdf model
+                robot_cdf=robot_cdf,  # cdf model
+                robot_fk=None,  # Not needed for 2D case
+                joint_limits=joint_limits,
+                planner_type='cdf_rrt',
+                device=robot_cdf.device,
+                seed=seed
+            )
+        elif planner_type == 'sdf_rrt':
+            planner = OMPLRRTPlanner(
+                robot_sdf=robot_sdf,  # sdf model
+                robot_cdf=robot_cdf,  # cdf model
+                robot_fk=None,  # Not needed for 2D case
+                joint_limits=joint_limits,
+                planner_type='sdf_rrt',
+                device=robot_cdf.device,
+                seed=seed
+            )
         
         # Try each goal configuration until success or all failed
         result = None
@@ -86,7 +95,8 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
             start_config=initial_config,
             goal_configs=goal_configs,
             obstacle_points=obstacle_points,
-            max_time=10.0
+            max_time=10.0,
+            early_termination=early_termination
             )
         
         if result is None or not result['metrics'].success:
@@ -114,17 +124,15 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
         print(f"Reached goal index: {metrics.reached_goal_index}")
     
     # Create visualization
-
-
     if planner_type in ['bubble', 'bubble_connect']:
-        visualize_results(obstacles, initial_config, goal_configs[metrics.reached_goal_index], 
+        visualize_results(obstacles, initial_config, goal_configs, 
                          trajectory, src_dir=src_dir)
         
         visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, 
                                     trajectory, result['bubbles'], 
                                     obstacle_points, src_dir, planner_type=planner_type)
     else:  # cdf_rrt or sdf_rrt
-        visualize_results(obstacles, initial_config, goal_configs[metrics.reached_goal_index], 
+        visualize_results(obstacles, initial_config, goal_configs, 
                          trajectory, src_dir=src_dir)
         
         visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_configs, 
@@ -135,7 +143,7 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
 
 if __name__ == "__main__":
     # Set all random seeds
-    seed = 10
+    seed = 3
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -167,7 +175,7 @@ if __name__ == "__main__":
     planner = 'bubble'
     result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
-            max_bubble_samples=200, seed=seed, early_termination=True, 
+            max_bubble_samples=100, seed=seed, early_termination=False, 
             planner_type=planner
         )
 

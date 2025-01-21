@@ -45,7 +45,7 @@ def create_obstacles(num_points: int = 50, rng=None) -> List[np.ndarray]:
         x_range, y_range = {
             1: ((2, 3), (2, 3)),
             2: ((2, 3), (-2.5, -1.5)),
-            3: ((-3, -2), (-2.5, -2)),
+            3: ((-3, -2.5), (-3.5, -3.)),
             4: ((-3.5, -3.1), (3.1, 3.5))
         }[quadrant]
         return rng.uniform(*x_range), rng.uniform(*y_range)
@@ -88,7 +88,8 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray,
                     goal_angles: Optional[np.ndarray] = None,
                     robot_color: str = 'blue', robot_alpha: float = 1.0,
                     plot_obstacles: bool = True, add_to_legend: bool = True,
-                    label: Optional[str] = None):
+                    label: Optional[str] = None, linestyle: str = '-',
+                    highlight_joints: bool = False):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 10))
         show_plot = True
@@ -104,22 +105,23 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray,
 
     # Plot current configuration
     arm_x, arm_y = forward_kinematics(arm_angles)
-    ax.plot(arm_x, arm_y, color=robot_color, linestyle='-', 
+    ax.plot(arm_x, arm_y, color=robot_color, linestyle=linestyle, 
             linewidth=5, alpha=robot_alpha, 
             label=label if add_to_legend and label else None)
     
-    # Only plot markers if this is not an intermediate configuration
-    if robot_alpha > 0.9:  # Only for initial/goal configs
-        ax.plot(arm_x[0], arm_y[0], 'bo', markersize=15)
-        ax.plot(arm_x[1:-1], arm_y[1:-1], 'ko', markersize=15)
-        ax.plot(arm_x[-1], arm_y[-1], 'go', markersize=15)
-
-    # Plot goal configuration if provided
-    if goal_angles is not None:
-        goal_x, goal_y = forward_kinematics(goal_angles)
-        ax.plot(goal_x, goal_y, 'r--', linewidth=5, label='Goal Config')
-        ax.plot(goal_x[1:-1], goal_y[1:-1], 'ko', markersize=15)
-        ax.plot(goal_x[-1], goal_y[-1], 'ro', markersize=15)
+    # Highlight joints if requested
+    if highlight_joints:
+        # Base joint and middle joint are always black
+        ax.plot(arm_x[0], arm_y[0], 'ko', markersize=15, alpha=robot_alpha)
+        ax.plot(arm_x[1], arm_y[1], 'ko', markersize=15, alpha=robot_alpha)
+        
+        # End effector color depends on whether this is start or goal configuration
+        if label == 'Start':
+            ax.plot(arm_x[2], arm_y[2], 'go', markersize=15, alpha=robot_alpha)  # Green for start
+        elif label and label.startswith('Goal'):
+            ax.plot(arm_x[2], arm_y[2], 'ro', markersize=15, alpha=robot_alpha)  # Red for goal
+        else:
+            ax.plot(arm_x[2], arm_y[2], 'ko', markersize=15, alpha=robot_alpha)  # Black for intermediate
 
     num_links = arm_angles.shape[0]
     ax.set_xlim(-num_links * 2 -1 , num_links * 2 + 1)
@@ -131,7 +133,6 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray,
 
     plt.tight_layout()
     
-    # Only add legend for non-intermediate configurations
     if add_to_legend:
         ax.legend(fontsize=26)
 

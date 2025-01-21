@@ -30,9 +30,19 @@ def point_in_circle(point, center, radius):
     return np.linalg.norm(point - center) <= radius
 
 def get_valid_circles_batch(centers, radii, dist_function, new_positions, near_indices, epsilon, minimum_radius):
-    # Ensure inputs are numpy arrays
+    # Handle empty inputs
+    if len(new_positions) == 0:
+        return [], []
+        
+    # Ensure inputs are numpy arrays and at least 2D
     new_positions = np.asarray(new_positions)
+    if new_positions.ndim == 1:
+        new_positions = new_positions.reshape(1, -1)
+    
     near_indices = np.asarray(near_indices)
+    if near_indices.ndim == 0:
+        near_indices = near_indices.reshape(1)
+        
     centers = np.asarray(centers)
     radii = np.asarray(radii)
     
@@ -120,17 +130,51 @@ def get_rapidly_exploring(
     
     num_iterations = 0
     while n_circles < num_samples and num_iterations < max_num_iterations:
+        # Check if we've reached any goal at the start of each iteration
+        if end_point is not None:
+            all_goals_reached = True
+            for goal in end_point:
+                goal_reshaped = np.array(goal).reshape(1, -1)
+                _, near_idx = tree.query(goal_reshaped, k=1)
+                if not point_in_circle(goal, centers[near_idx[0]], radii[near_idx[0]]):
+                    all_goals_reached = False
+                    break
+
+            
+
+            # terminate if all goals are reached (may result in suboptimal planned path length)
+            # if all_goals_reached:
+            #     print("All goals reached! Terminating search.")
+            #     overlaps_graph = get_overlaps_graph_numpy(centers[:n_circles], radii[:n_circles])
+            #     return overlaps_graph, (centers[:n_circles], radii[:n_circles]), num_iterations
+
         # Use custom sampler if provided, otherwise use default sampling
         if sample_fn is not None:
             random_positions = sample_fn(batch_size)
+            # Ensure random_positions is 2D array
+            if isinstance(random_positions, np.ndarray) and random_positions.ndim == 1:
+                random_positions = random_positions.reshape(1, -1)
         else:
             # Original sampling logic
             goal_biased_count = int(batch_size * prc) if end_point is not None else 0
             regular_count = batch_size - goal_biased_count
             
+            # Ensure we get at least one sample
+            regular_count = max(1, regular_count)
+            
             random_positions = get_uniform_random_points(regular_count, inflated_mins, inflated_maxs, rng=rng)
+            # Ensure random_positions is 2D array
+            if random_positions.ndim == 1:
+                random_positions = random_positions.reshape(1, -1)
+                
             if goal_biased_count > 0:
-                goal_positions = np.tile(end_point, (goal_biased_count, 1))
+                if isinstance(end_point, list):
+                    # Handle multiple goals
+                    goal_positions = np.array([end_point[rng.integers(0, len(end_point))] 
+                                            for _ in range(goal_biased_count)])
+                else:
+                    # Single goal
+                    goal_positions = np.tile(end_point, (goal_biased_count, 1))
                 random_positions = np.vstack([random_positions, goal_positions])
 
         # Find nearest neighbors for all points in batch
@@ -304,6 +348,18 @@ def get_rapidly_exploring_connect(
         return overlaps_graph, (all_centers, all_radii)
 
     while num_iterations < max_num_iterations:
+        # Add check at the start of each iteration
+        if all(goals_connected):
+            print("All goals connected! Terminating search.")
+            overlaps_graph, (all_centers, all_radii) = create_final_graph(
+                start_centers[:n_start_circles],
+                start_radii[:n_start_circles],
+                goal_centers,
+                goal_radii,
+                goals_connected
+            )
+            return overlaps_graph, (all_centers, all_radii), num_iterations
+
         # Determine which tree we're growing
         if num_iterations % (num_goals + 1) == 0:
             # Check if start tree is full

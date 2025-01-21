@@ -8,10 +8,17 @@ import torch
 from utils_env import plot_environment
 
 
-def visualize_results(obstacles, initial_config, goal_config, trajectory, src_dir):
+def visualize_results(obstacles, initial_config, goal_configs, trajectory, src_dir):
     """Create visualizations of the planning results"""
-    # Create workspace visualization
-    fig_ws, ax_ws = plt.subplots(figsize=(12, 12))
+    # Create workspace visualization with adjusted size
+    fig_ws, ax_ws = plt.subplots(figsize=(8, 7))  # Reduced from (12, 12) to (8, 7)
+    
+    # Convert goal_configs to list if it's a numpy array
+    if isinstance(goal_configs, np.ndarray):
+        if goal_configs.ndim == 1:
+            goal_configs = [goal_configs]
+        else:
+            goal_configs = [g for g in goal_configs]
     
     if trajectory is not None:
         # Plot trajectory in configuration space
@@ -21,46 +28,71 @@ def visualize_results(obstacles, initial_config, goal_config, trajectory, src_di
         # Plot trajectory in C-space
         ax_cs.plot(trajectory[:, 0], trajectory[:, 1], 'b-', label='Path', alpha=0.7)
         ax_cs.plot(initial_config[0], initial_config[1], 'go', label='Start')
-        ax_cs.plot(goal_config[0], goal_config[1], 'ro', label='Goal')
         
-        ax_cs.set_xlabel('θ₁')
-        ax_cs.set_ylabel('θ₂')
+        # Plot goal configurations
+        markers = ['^', 's']  # triangle and square markers
+        for i, goal in enumerate(goal_configs):
+            marker = markers[i] if i < len(markers) else 'o'
+            ax_cs.plot(goal[0], goal[1], f'r{marker}', label=f'Goal {i+1}')
+        
+        ax_cs.set_xlabel('θ₁', fontsize=20)
+        ax_cs.set_ylabel('θ₂', fontsize=20)
         ax_cs.set_title('Path in Configuration Space')
-        ax_cs.grid(True)
-        ax_cs.legend()
+        ax_cs.legend(fontsize=20)
         
         # Save configuration space plot
         plt.savefig(os.path.join(src_dir, 'figures/config_space_path.png'))
         plt.close(fig_cs)
         
-        # Print debug info
-        # print("\nTrajectory debug info:")
-        # print(f"Initial config: {initial_config}")
-        # print(f"Goal config: {goal_config}")
-        # print(f"First waypoint: {trajectory[0]}")
-        # print(f"Last waypoint: {trajectory[-1]}")
+        # Plot initial configuration in workspace
+        plot_environment(obstacles, initial_config, ax=ax_ws, 
+                        robot_color='blue', 
+                        robot_alpha=0.9,
+                        plot_obstacles=True,
+                        label='Start',
+                        highlight_joints=True)
         
-        # Plot intermediate configurations in workspace
-        num_viz_configs = min(10, len(trajectory))  # Show up to 10 intermediate configs
-        viz_indices = np.linspace(0, len(trajectory)-1, num_viz_configs, dtype=int)
+        # Plot goal configurations with different styles
+        linestyles = ['--', ':']  # dashed for goal 1, dotted for goal 2
+        for i, goal in enumerate(goal_configs):
+            plot_environment(obstacles, goal, ax=ax_ws, 
+                           robot_color='red', 
+                           robot_alpha=0.7,
+                           plot_obstacles=False,
+                           label=f'Goal {i+1}',
+                           linestyle=linestyles[i],
+                           highlight_joints=True)
         
-        for i, idx in enumerate(viz_indices):
+        # Plot waypoints with specific fractions of total trajectory length
+        N = len(trajectory)
+        fractions = [8, 4, 2, 1.5, 1.2, 1.1, 1.05, 1.02]  # Denominators for N
+        indices = [int(N/f) for f in fractions]
+        indices = np.unique(indices)  # Remove any duplicates
+        
+        for idx in indices:
             config = trajectory[idx]
-            alpha = 0.3 if i not in [0, len(viz_indices)-1] else 0.7
-            color = 'blue' if i not in [0, len(viz_indices)-1] else ('green' if i == 0 else 'red')
-            label = 'Start' if i == 0 else ('Goal' if i == len(viz_indices)-1 else None)
-            
             plot_environment(obstacles, config, ax=ax_ws, 
-                           robot_color=color, 
-                           robot_alpha=alpha,
-                           plot_obstacles=(i==0),  # Only plot obstacles once
-                           label=label)
+                           robot_color='green', 
+                           robot_alpha=0.4,
+                           plot_obstacles=False,
+                           label='Waypoints' if idx == indices[0] else None,  # Only label first waypoint
+                           add_to_legend=idx == indices[0])  # Only add first waypoint to legend
     
-    #ax_ws.set_title('Workspace Visualization')
-    ax_ws.legend()
+    # Increase tick sizes
+    ax_ws.tick_params(axis='both', which='major', labelsize=22)
+    
+    # Increase axis label sizes
+    ax_ws.set_xlabel('X', fontsize=22)
+    ax_ws.set_ylabel('Y', fontsize=22)
+    
+    # Adjust legend
+    ax_ws.legend(fontsize=22, loc='lower left')
+    
+    # Make layout tight
+    plt.tight_layout()
     
     # Save workspace visualization
-    plt.savefig(os.path.join(src_dir, 'figures/workspace_visualization.png'))
+    plt.savefig(os.path.join(src_dir, 'figures/workspace_visualization.png'), dpi=300)
     plt.close(fig_ws)
     
     print("Saved workspace visualization")
@@ -216,45 +248,52 @@ def visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, traje
     # Reshape back to grid
     cdf_values = cdf_values.reshape(resolution, resolution)
     
-    # Create visualization
-    fig, ax = plt.subplots(figsize=(10, 10))
+    # Create visualization with adjusted size and layout
+    fig, ax = plt.subplots(figsize=(8, 7))  # Reduced figure size
     
-    # Plot CDF field without transpose (matches visualize_cdf_field)
+    # Plot CDF field without transpose
     im = ax.imshow(cdf_values, extent=[-np.pi, np.pi, -np.pi, np.pi], 
                    origin='lower', cmap='viridis', aspect='equal')
-    plt.colorbar(im, ax=ax, label='CDF Value')
+    cbar = plt.colorbar(im, ax=ax)
+    
+    # Increase colorbar label size but keep it compact
+    cbar.ax.tick_params(labelsize=20)
+    # Remove colorbar label to save space
+    # cbar.set_label('CDF Value', size=20)
     
     # Plot bubbles from igraph Graph object
     if bubbles is not None:
-        print(f"Plotting bubbles from graph with {len(bubbles.vs)} vertices")
         for vertex in bubbles.vs:
             circle = vertex["circle"]
             if circle is not None:
                 center = circle.centre
                 radius = circle.radius
-                circle_patch = plt.Circle(
-                    (center[0], center[1]), 
-                    radius, 
-                    fill=False, 
-                    color='cyan', 
-                    alpha=0.5
-                )
-                ax.add_patch(circle_patch)
+                theta = np.linspace(0, 2*np.pi, 100)
+                circle_x = center[0] + radius * np.cos(theta)
+                circle_y = center[1] + radius * np.sin(theta)
+                circle_x = np.clip(circle_x, -np.pi, np.pi)
+                circle_y = np.clip(circle_y, -np.pi, np.pi)
+                ax.plot(circle_x, circle_y, color='cyan', alpha=0.8, linewidth=2)
     
     # Plot trajectory if available
     if trajectory is not None:
         trajectory = np.array(trajectory)
         ax.plot(trajectory[:, 0], trajectory[:, 1], 'r-', linewidth=2, label='Planned Path')
     
-    # Plot start and goals
-    ax.plot(initial_config[0], initial_config[1], 'go', markersize=10, label='Start')
+    # Plot start and goals with different shapes
+    ax.scatter(initial_config[0], initial_config[1], color='yellow', marker='o', s=150, label='Start')
+    markers = ['^', 's']  # triangle and square markers
     for i, goal in enumerate(goal_configs):
-        ax.plot(goal[0], goal[1], 'r^', markersize=10, label=f'Goal {i+1}')
+        marker = markers[i] if i < len(markers) else 'o'
+        ax.scatter(goal[0], goal[1], color='r', marker=marker, s=150, label=f'Goal {i+1}')
     
-    ax.set_xlabel('θ₁')
-    ax.set_ylabel('θ₂')
-    #ax.set_title('CDF Planning Visualization')
-    ax.legend()
+    ax.set_xlabel('θ₁', fontsize=20)
+    ax.set_ylabel('θ₂', fontsize=20)
+    ax.tick_params(axis='both', which='major', labelsize=20)
+    ax.legend(fontsize=20, loc='lower left')  # Adjusted legend position
+
+    # Adjust layout to minimize whitespace
+    plt.tight_layout()
 
     if planner_type == 'bubble':
         plt.savefig(os.path.join(src_dir, 'figures/cdf_bubble_planning_visualization.png'), 
@@ -318,10 +357,17 @@ def visualize_cdf_field(robot_cdf, obstacle_points, resolution=100):
     # Plot CDF field without transpose
     im = ax.imshow(cdf_values, extent=[-np.pi, np.pi, -np.pi, np.pi], 
                    origin='lower', cmap='viridis', aspect='equal')
-    plt.colorbar(im, ax=ax, label='CDF Value')
+    cbar = plt.colorbar(im, ax=ax, label='CDF Value')
     
-    ax.set_xlabel('θ₁')
-    ax.set_ylabel('θ₂')
+    # Increase colorbar label size
+    cbar.ax.tick_params(labelsize=12)
+    cbar.set_label('CDF Value', size=14)
+    
+    # Increase tick sizes
+    ax.tick_params(axis='both', which='major', labelsize=12)
+    
+    ax.set_xlabel('θ₁', fontsize=14)
+    ax.set_ylabel('θ₂', fontsize=14)
     ax.set_title('CDF Field in Configuration Space')
     
     plt.show()
@@ -381,8 +427,8 @@ def visualize_sdf_field(robot_sdf, obstacle_points, resolution=100):
                    origin='lower', cmap='RdBu', aspect='equal')
     plt.colorbar(im, ax=ax, label='SDF Value')
     
-    ax.set_xlabel('θ₁')
-    ax.set_ylabel('θ₂')
+    ax.set_xlabel('θ₁', fontsize=14)
+    ax.set_ylabel('θ₂', fontsize=14)
     ax.set_title('SDF Field in Configuration Space')
 
     plt.show()
@@ -486,14 +532,16 @@ def visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_confi
         trajectory = np.array(trajectory)
         ax.plot(trajectory[:, 0], trajectory[:, 1], 'r-', linewidth=2, label='Planned Path')
     
-    # Plot start and goals
-    ax.plot(initial_config[0], initial_config[1], 'go', markersize=10, label='Start')
+    # Plot start and goals with different shapes
+    ax.scatter(initial_config[0], initial_config[1], color='g', marker='o', s=100, label='Start')
     for i, goal in enumerate(goal_configs):
-        ax.plot(goal[0], goal[1], 'r^', markersize=10, label=f'Goal {i+1}')
+        marker = '^' if i == 0 else 's'  # triangle for first goal, square for second
+        ax.scatter(goal[0], goal[1], color='r', marker=marker, s=100, label=f'Goal {i+1}')
     
-    ax.set_xlabel('θ₁')
-    ax.set_ylabel('θ₂')
-    ax.legend()
+    ax.set_xlabel('θ₁', fontsize=14)
+    ax.set_ylabel('θ₂', fontsize=14)
+    ax.set_title('OMPL RRT Planning Visualization', fontsize=16)
+    ax.legend(fontsize=12)
     
     # Save figure
     if planner_type == 'cdf_rrt':

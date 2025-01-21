@@ -96,8 +96,8 @@ class BubblePlanner:
         self.device = device
         
         # Planning parameters
-        self.epsilon = 1E-1          
-        self.min_radius = 1E-1      
+        self.epsilon = 5E-2         
+        self.min_radius = 1E-1     
         self.num_samples = max_samples             
         self.max_iterations = 5E4
         self.goal_bias = 0.1
@@ -129,7 +129,7 @@ class BubblePlanner:
             return_gradients=False
         )
         
-        min_cdf = max(cdf_values.min().detach().cpu().numpy() - 0.1, 0.05)
+        min_cdf = cdf_values.min().detach().cpu().numpy() 
 
         # For 2d: 
         # min_cdf = max(cdf_values.min().detach().cpu().numpy() - 0.1, 0.05)
@@ -255,7 +255,7 @@ class BubblePlanner:
     def plan(self, start_config: np.ndarray, goal_configs: List[np.ndarray], obstacle_points: torch.Tensor):
         """Plan a path from start to multiple goal configurations"""
         print("\nStarting bubble-based planning...")
-        print(f"Input shapes - Start: {start_config.shape}, Goals: {[g.shape for g in goal_configs]}, Obstacles: {obstacle_points.shape}")
+        # print(f"Input shapes - Start: {start_config.shape}, Goals: {[g.shape for g in goal_configs]}, Obstacles: {obstacle_points.shape}")
         
         start_time = time.time()
         self.cdf_query_count = 0  # Reset counter
@@ -264,7 +264,7 @@ class BubblePlanner:
             # Generate bubbles with obstacle points
             overlaps_graph, max_circles = self.generate_bubbles(start_config, goal_configs, obstacle_points)
 
-            print('cdf_query_count_in generating bubbles', self.cdf_query_count)
+            # print('cdf_query_count_in generating bubbles', self.cdf_query_count)
             
             # Find start index and try to connect if needed
             start_idx = position_to_max_circle_idx(overlaps_graph, start_config)
@@ -282,11 +282,11 @@ class BubblePlanner:
             # Try to connect each goal and store successful connections
             goal_connections = []
             for goal_idx, goal_config in enumerate(goal_configs):
-                print(f"Processing goal {goal_idx}: {goal_config}")
+                #print(f"Processing goal {goal_idx}: {goal_config}")
                 end_idx = position_to_max_circle_idx(overlaps_graph, goal_config)
-                print(f"Goal {goal_idx} index: {end_idx}")
+                # print(f"Goal {goal_idx} index: {end_idx}")
                 if end_idx < 0:
-                    print(f"Attempting to repair graph for goal {goal_idx}")
+                    # print(f"Attempting to repair graph for goal {goal_idx}")
                     try:
                         overlaps_graph, end_idx = trace_toward_graph_all(
                             overlaps_graph, 
@@ -296,7 +296,7 @@ class BubblePlanner:
                             goal_config
                         )
                         goal_connections.append((end_idx, goal_config))
-                        print(f"Successfully connected goal {goal_idx}")
+                        # print(f"Successfully connected goal {goal_idx}")
                     except Exception as e:
                         print(f"Failed to connect goal {goal_idx}: {e}")
                 else:
@@ -306,8 +306,7 @@ class BubblePlanner:
             if not goal_connections:
                 raise Exception("No goals could be connected to the graph")
 
-            print(f"Number of connected goals: {len(goal_connections)}")
-            
+
             # Find best path among all connected goals
             overlaps_graph.to_directed()
             best_path = None
@@ -317,9 +316,9 @@ class BubblePlanner:
 
             for goal_idx, (end_idx, goal_config) in enumerate(goal_connections):
                 try:
-                    print(f"Trying path to goal {goal_idx} at index {end_idx}")
+                    # print(f"Trying path to goal {goal_idx} at index {end_idx}")
                     path_result = get_shortest_path(
-                        lambda from_circle, to_circle: from_circle.hausdorff_distance_to(to_circle),
+                        lambda from_circle, to_circle: from_circle.single_sided_hausdorff_distance_to(to_circle),
                         overlaps_graph,
                         start_idx,
                         end_idx,
@@ -328,7 +327,7 @@ class BubblePlanner:
                     )
                     
                     if path_result is not None:
-                        print(f"Found path: {path_result}")
+                        # print(f"Found path: {path_result}")
                         path_cost = sum(overlaps_graph.es[e]["hausdorff_distance"] for e in path_result[0])
                         print(f"Path cost: {path_cost}")
                         if path_cost < best_cost:
@@ -354,7 +353,7 @@ class BubblePlanner:
                     best_goal_config
                 )
                 
-                cost = bezier_cost_all(bps)
+                cost = bezier_cost_all(bps, weights=[0.1])     # weights=[0.1] for minimizing path length, [1.0, 0.1] for smoother
                 prob = cvxpy.Problem(cvxpy.Minimize(cost), constr_bps)
                 prob.solve()
                 

@@ -25,7 +25,7 @@ def to_tensor(s, dof):
     return torch.tensor([s[i] for i in range(dof)], dtype=torch.float32)
 
 class ValidityCheckerWrapper:
-    def __init__(self, robot_sdf, robot_cdf, points_robot, dof=6, safety_margin=0.01, device='cuda'):
+    def __init__(self, robot_sdf, robot_cdf, points_robot, dof=6, safety_margin=0.05, device='cuda'):
         self.robot_sdf = robot_sdf
         self.robot_cdf = robot_cdf
         self.points_robot = points_robot  # Should be shape [N, 3]
@@ -78,8 +78,7 @@ class OMPLRRTPlanner:
                  joint_limits: tuple,
                  planner_type: str = 'rrt',
                  device: str = 'cuda',
-                 seed: int = None,
-                 safety_margin: float = 0.01):
+                 seed: int = None):
         """
         Initialize OMPL RRT planner
         
@@ -96,7 +95,11 @@ class OMPLRRTPlanner:
         self.robot_fk = robot_fk
         self.device = device
         self.dof = len(joint_limits[0])
-        self.safety_margin = safety_margin
+
+        if planner_type == 'cdf_rrt':
+            self.safety_margin = 0.1        # consistent with bubble planner
+        elif planner_type == 'sdf_rrt':
+            self.safety_margin = 0.05        # 5 cm safety margin
         # Set random seed if provided
         if seed is not None:
             print(f"Setting RRT random seed: {seed}")
@@ -122,133 +125,173 @@ class OMPLRRTPlanner:
              goal_configs: List[np.ndarray],
              obstacle_points: torch.Tensor,
              max_time: float = 30.0,
-             return_metrics: bool = True) -> Dict[str, Any]:
+             return_metrics: bool = True,
+             early_termination: bool = True) -> Dict[str, Any]:
         """
         Plan path using OMPL RRT with multiple goals
+        
+        Args:
+            ...
+            early_termination: If True, return after finding first path to any goal
+                              If False, continue until paths to all goals are found
+                              or max_time is reached
         """
         print("\nPlanning Debug Info:")
         print(f"Start config: {start_config}")
         print(f"Number of goals: {len(goal_configs)}")
+        print(f"Early termination: {early_termination}")
         
         # Setup validity checker
         self.validity_checker = ValidityCheckerWrapper(self.robot_sdf, self.robot_cdf, obstacle_points, 
                                                        self.dof, self.safety_margin, self.device)
         self.si.setStateValidityChecker(ob.StateValidityCheckerFn(self.validity_checker))
-
+        
         check_resolution = 0.01    # 0.01 for 2 joints, 0.001 for 6 joints
         self.si.setStateValidityCheckingResolution(check_resolution)
         self.si.setup()
         
-        # Setup problem definition
-        pdef = ob.ProblemDefinition(self.si)
-        
-        # Create start state
-        start = ob.State(self.space)
-        for i in range(self.dof):
-            start[i] = float(start_config[i])
-        pdef.addStartState(start)
-        
-        # Create goal states and add them as multiple goals
-        goal_threshold = 0.05
-        print(f"Using goal threshold: {goal_threshold}")
-        
-        # Create a MultiGoalRegion
-        mg = ob.GoalStates(self.si)
-        
-        # Add each goal state to the MultiGoalRegion
-        for i, goal_config in enumerate(goal_configs):
-            goal = ob.State(self.space)
-            for j in range(self.dof):
-                goal[j] = float(goal_config[j])
-            mg.addState(goal)
-            print(f"Added goal {i}: {goal_config}")
-        
-        # Set the multi-goal as the problem goal
-        pdef.setGoal(mg)
-        
-        # Create and setup planner
-        planner = og.RRT(self.si)
-        planner.setRange(0.1)
-        planner.setGoalBias(0.1)
-        print(f"RRT parameters - Step size: {planner.getRange()}, Goal bias: {planner.getGoalBias()}")
-        
-        planner.setProblemDefinition(pdef)
-        planner.setup()
-        
-        # Solve
+        all_results = []
+        remaining_goals = list(range(len(goal_configs)))
         start_time = time.time()
-        solved = planner.solve(max_time)
-        planning_time = time.time() - start_time
         
-        print(f"\nPlanning solved: {solved}")
+        while remaining_goals and (time.time() - start_time) < max_time:
+            # Create new problem definition
+            pdef = ob.ProblemDefinition(self.si)
+            
+            # Set start state
+            start = ob.State(self.space)
+            for i in range(self.dof):
+                start[i] = float(start_config[i])
+            pdef.addStartState(start)
+            
+            # Create multi-goal for remaining goals
+            mg = ob.GoalStates(self.si)
+            for goal_idx in remaining_goals:
+                goal = ob.State(self.space)
+                for j in range(self.dof):
+                    goal[j] = float(goal_configs[goal_idx][j])
+                mg.addState(goal)
+            pdef.setGoal(mg)
+            
+            # Create and setup planner
+            planner = og.RRT(self.si)
+            planner.setRange(0.1)
+            planner.setGoalBias(0.1)
+            planner.setProblemDefinition(pdef)
+            planner.setup()
+            
+            # Solve with remaining time
+            remaining_time = max_time - (time.time() - start_time)
+            if remaining_time <= 0:
+                break
+            
+            solved = planner.solve(remaining_time)
+            
+            if solved:
+                path = pdef.getSolutionPath()
+                # Optimize path
+                simplifier = og.PathSimplifier(self.si)
+                simplifier.shortcutPath(path)
+                simplifier.smoothBSpline(path)
+                
+                # Extract waypoints
+                waypoints = []
+                for state in path.getStates():
+                    waypoint = [state[i] for i in range(self.dof)]
+                    waypoints.append(waypoint)
+                waypoints = np.array(waypoints)
+                
+                # Calculate path length
+                path_length = sum(np.linalg.norm(waypoints[i+1] - waypoints[i]) 
+                                for i in range(len(waypoints)-1))
+                
+                # Find which remaining goal was reached
+                final_waypoint = waypoints[-1]
+                reached_idx = None
+                min_dist = float('inf')
+                for goal_idx in remaining_goals:
+                    dist = np.linalg.norm(final_waypoint - goal_configs[goal_idx])
+                    if dist < min_dist:
+                        min_dist = dist
+                        reached_idx = goal_idx
+                
+                # Store result
+                result = {
+                    'waypoints': waypoints,
+                    'reached_goal_index': reached_idx,
+                    'path_length': path_length,
+                    'metrics': PlanningMetrics(
+                        success=True,
+                        num_collision_checks=self.validity_checker.counter,
+                        path_length=path_length,
+                        num_samples=len(waypoints),
+                        planning_time=time.time() - start_time,
+                        reached_goal_index=reached_idx
+                    )
+                }
+                all_results.append(result)
+                
+                # Remove reached goal from remaining goals
+                if reached_idx is not None:
+                    remaining_goals.remove(reached_idx)
+                    
+                # Early termination check
+                if early_termination:
+                    # Return the shortest path if we found multiple
+                    if len(all_results) > 0:
+                        best_result = min(all_results, key=lambda x: x['path_length'])
+                        return {
+                            'waypoints': best_result['waypoints'],
+                            'metrics': best_result['metrics']
+                        }
         
-        # Extract solution and metrics
-        if solved:
-            # Get path
-            path = pdef.getSolutionPath()
-            waypoints = []
-            for state in path.getStates():
-                waypoint = [state[i] for i in range(self.dof)]
-                waypoints.append(waypoint)
-            waypoints = np.array(waypoints)
-            
-            print(f"\nPath found with {len(waypoints)} waypoints")
-            # print("First few waypoints:")
-            # for i in range(min(3, len(waypoints))):
-            #     print(f"Waypoint {i}: {waypoints[i]}")
-            # print("Last few waypoints:")
-            # for i in range(max(0, len(waypoints)-2), len(waypoints)):
-            #     print(f"Waypoint {i}: {waypoints[i]}")
-            
-            # Find which goal was reached
-            final_waypoint = waypoints[-1]
-            reached_goal_index = 0
-            min_dist = float('inf')
-            for i, goal_config in enumerate(goal_configs):
-                dist = np.linalg.norm(final_waypoint - goal_config)
-                if dist < min_dist:
-                    min_dist = dist
-                    reached_goal_index = i
-            
-            print(f"\nReached goal index: {reached_goal_index}")
-            print(f"Final distance to reached goal: {min_dist}")
-            
-            # Compute path length
-            path_length = 0.0
-            for i in range(len(waypoints)-1):
-                path_length += np.linalg.norm(waypoints[i+1] - waypoints[i])
-            
-            # Get number of vertices using PlannerData
-            pdata = ob.PlannerData(self.si)
-            planner.getPlannerData(pdata)
-            num_vertices = pdata.numVertices()
-            
-            metrics = PlanningMetrics(
-                success=True,
-                num_collision_checks=self.validity_checker.counter,  # Total checks (vertex + edge)
-                path_length=path_length,
-                num_samples=num_vertices,  # Using PlannerData to get vertex count
-                planning_time=planning_time,
-                reached_goal_index=reached_goal_index
-            )
-            
-            return {
-                'waypoints': waypoints,
-                'metrics': metrics
-            }
+        # If we get here, either:
+        # 1. We found all paths (remaining_goals is empty)
+        # 2. We ran out of time
+        # 3. We failed to find any paths
+        
+        if len(all_results) > 0:
+            print(f"\nFound {len(all_results)} paths to goals")
+            # Return all paths if early_termination=False, or best path if True
+            if early_termination:
+                best_result = min(all_results, key=lambda x: x['path_length'])
+                #print(f"Early termination: Returning shortest path to goal {best_result['reached_goal_index']}")
+                return {
+                    'waypoints': best_result['waypoints'],
+                    'metrics': best_result['metrics']
+                }
+            else:
+                # Find the best path among all found paths
+                best_result = min(all_results, key=lambda x: x['path_length'])
+                #print(f"Found paths to goals: {[r['reached_goal_index'] for r in all_results]}")
+                #print(f"Best path is to goal {best_result['reached_goal_index']} with length {best_result['path_length']:.3f}")
+                return {
+                    'waypoints': best_result['waypoints'],
+                    'all_paths': all_results,
+                    'found_all_goals': len(remaining_goals) == 0,
+                    'metrics': PlanningMetrics(
+                        success=True,
+                        num_collision_checks=self.validity_checker.counter,
+                        path_length=best_result['path_length'],  # Use shortest path length
+                        num_samples=sum(len(r['waypoints']) for r in all_results),  # Total samples across all paths
+                        planning_time=time.time() - start_time,
+                        reached_goal_index=best_result['reached_goal_index']  # Index of shortest path goal
+                    )
+                }
         else:
-            metrics = PlanningMetrics(
-                success=False,
-                num_collision_checks=self.validity_checker.counter,
-                path_length=float('inf'),
-                num_samples=self.validity_checker.counter,
-                planning_time=planning_time,
-                reached_goal_index=-1
-            )
-            
+            print("\nNo paths found to any goals")
             return {
                 'waypoints': None,
-                'metrics': metrics
+                'all_paths': [],
+                'found_all_goals': False,
+                'metrics': PlanningMetrics(
+                    success=False,
+                    num_collision_checks=self.validity_checker.counter,
+                    path_length=float('inf'),
+                    num_samples=0,
+                    planning_time=time.time() - start_time,
+                    reached_goal_index=-1
+                )
             }
 
 def test_ompl_planner():

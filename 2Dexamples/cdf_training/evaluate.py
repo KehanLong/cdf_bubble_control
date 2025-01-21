@@ -13,6 +13,7 @@ sys.path.append(str(project_root))
 from robot_models import Robot2D
 from cdf_computation import CDFDataProcessor, compute_cdf_and_gradients
 from network import CDFNetwork
+from robot_cdf import RobotCDF
 
 def create_evaluation_dataset(
     batch_q_size=200,
@@ -83,46 +84,54 @@ def create_evaluation_dataset(
     return all_points, all_configs, final_cdf_values
 
 def evaluate_quantitative(
-    model_path,
     eval_dataset_path='data/evaluation_dataset_2d.pt',
     device='cuda'
 ):
     """Perform quantitative evaluation using a fixed evaluation dataset"""
     print("Loading evaluation dataset...")
 
-
     src_dir = Path(__file__).parent
-    eval_dataset_path = src_dir /  "data" / "evaluation_dataset_2d.pt"
+    eval_dataset_path = src_dir / "data" / "evaluation_dataset_2d.pt"
     data = torch.load(eval_dataset_path)
     points = data['points'].to(device)      # [N, 2]
     configs = data['configs'].to(device)    # [M, 2]
     gt_cdf_values = data['gt_cdf_values'].to(device)  # [N, M]
     
-    print("Loading trained model...")
-    model = CDFNetwork(input_dims=8, output_dims=1).to(device)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
+    print(f"\nDataset shapes:")
+    print(f"Points shape: {points.shape}")
+    print(f"Configs shape: {configs.shape}")
+    print(f"Ground truth values shape: {gt_cdf_values.shape}")
     
-    print("Computing model predictions...")
+    print("\nLoading trained model...")
+    robot_cdf = RobotCDF(device=device)
+    
+    print("\nComputing model predictions...")
     with torch.no_grad():
-        # Prepare inputs with positional encoding
-        points_exp = points.unsqueeze(1).expand(-1, configs.shape[0], -1)  # [N, M, 2]
-        configs_exp = configs.unsqueeze(0).expand(points.shape[0], -1, -1)  # [N, M, 2]
+        batch_size = 100
+        pred_cdf_values = torch.zeros_like(gt_cdf_values)
         
-        # Apply positional encoding to configurations
-        configs_sin = torch.sin(configs_exp)
-        configs_cos = torch.cos(configs_exp)
-        
-        # Prepare network inputs
-        inputs = torch.cat([
-            configs_exp.reshape(-1, 2),
-            configs_sin.reshape(-1, 2),
-            configs_cos.reshape(-1, 2),
-            points_exp.reshape(-1, 2)
-        ], dim=1)
-        
-        # Get predictions
-        pred_cdf_values = model(inputs).reshape(points.shape[0], configs.shape[0])
+        for i in range(0, points.shape[0], batch_size):
+            for j in range(0, configs.shape[0], batch_size):
+                i_end = min(i + batch_size, points.shape[0])
+                j_end = min(j + batch_size, configs.shape[0])
+                
+                # Get batch of points and configs
+                points_batch = points[i:i_end]  # [batch_N, 2]
+                configs_batch = configs[j:j_end]  # [batch_M, 2]
+                
+                # For each config in the batch, compute CDF for all points
+                for k, config in enumerate(configs_batch):
+                    points_input = points_batch.unsqueeze(0)  # [1, batch_N, 2]
+                    config_input = config.unsqueeze(0)  # [1, 2]
+                    
+                    # print(f"\nBatch shapes:")
+                    # print(f"Points input shape: {points_input.shape}")
+                    # print(f"Config input shape: {config_input.shape}")
+                    
+                    pred_batch = robot_cdf.query_cdf(points_input, config_input)
+                    pred_cdf_values[i:i_end, j+k] = pred_batch.squeeze(0)
+                    
+                # print(f"Processed batch: points [{i}:{i_end}], configs [{j}:{j_end}]")
     
     # Compute metrics
     mse = torch.nn.functional.mse_loss(pred_cdf_values, gt_cdf_values).item()
@@ -171,43 +180,37 @@ def evaluate_quantitative(
         'ground_truth': gt_cdf_values
     }
 
-def visualize_test_cases(model_path, device='cuda'):
+def visualize_test_cases(device='cuda'):
     """Visualize specific test cases with the trained model"""
-    # Initialize model and robot
-    model = CDFNetwork(input_dims=8, output_dims=1).to(device)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
+    # Initialize robot_cdf
+    robot_cdf = RobotCDF(device=device)
     robot = Robot2D(device=device)
     
     # Define test configurations
     test_configs = [
-        torch.tensor([0.0, 0.0], device=device),  # Home position
-        torch.tensor([np.pi/4, np.pi/4], device=device),  # 45 degrees each
-        torch.tensor([np.pi/2, -np.pi/2], device=device),  # Bent position
+        torch.tensor([0.0, 0.0], device=device, dtype=torch.float32),
+        torch.tensor([np.pi/4, np.pi/4], device=device, dtype=torch.float32),
+        torch.tensor([np.pi/2, -np.pi/2], device=device, dtype=torch.float32),
     ]
     
     # Create a grid of test points
-    x = np.linspace(-2, 2, 50)
-    y = np.linspace(-2, 2, 50)
+    x = np.linspace(-4, 4, 100)
+    y = np.linspace(-4, 4, 100)
     X, Y = np.meshgrid(x, y)
-    points = torch.tensor(np.stack([X.flatten(), Y.flatten()], axis=1), device=device)
+    points = torch.tensor(np.stack([X.flatten(), Y.flatten()], axis=1), 
+                         device=device, dtype=torch.float32)  # [N, 2]
     
     # Plot for each configuration
     for i, config in enumerate(test_configs):
         plt.figure(figsize=(8, 8))
         
-        # Prepare inputs with positional encoding
-        config_exp = config.unsqueeze(0).expand(points.shape[0], -1)
-        inputs = torch.cat([
-            config_exp,
-            torch.sin(config_exp),
-            torch.cos(config_exp),
-            points
-        ], dim=1)
+        # Prepare inputs for robot_cdf
+        points_input = points.unsqueeze(0)  # [1, N, 2]
+        config_input = config.unsqueeze(0)  # [1, 2]
         
-        # Get CDF predictions
+        # Get CDF predictions using robot_cdf
         with torch.no_grad():
-            cdf_values = model(inputs).cpu().numpy()
+            cdf_values = robot_cdf.query_cdf(points_input, config_input).squeeze(0).cpu().numpy()
         
         # Plot CDF heatmap
         plt.scatter(X.flatten(), Y.flatten(), c=cdf_values, cmap='viridis')
@@ -368,12 +371,9 @@ if __name__ == "__main__":
     save_path = src_dir / 'cdf_training' / 'data' / 'evaluation_dataset_2d.pt'
     # create_evaluation_dataset(batch_q_size=200, batch_x_size=400, device='cuda', save_path=save_path)
     
-    # Run evaluation
-    model_path = src_dir / 'trained_models' / 'cdf' / 'best_model_relu.pth'
-    
     # Run efficiency comparison
     # efficiency_results = compare_computation_efficiency(model_path=model_path)
     
     # Run other evaluations
-    metrics = evaluate_quantitative(model_path=model_path)
-    visualize_test_cases(model_path=model_path) 
+    metrics = evaluate_quantitative()
+    visualize_test_cases() 
