@@ -76,7 +76,8 @@ class OMPLRRTPlanner:
                  robot_cdf,
                  robot_fk,
                  joint_limits: tuple,
-                 planner_type: str = 'rrt',
+                 planner_type: str = 'sdf_rrt',
+                 check_resolution: float = 0.01,
                  device: str = 'cuda',
                  seed: int = None):
         """
@@ -99,7 +100,7 @@ class OMPLRRTPlanner:
         if planner_type == 'cdf_rrt':
             self.safety_margin = 0.1        # consistent with bubble planner
         elif planner_type == 'sdf_rrt':
-            self.safety_margin = 0.05        # 5 cm safety margin
+            self.safety_margin = 0.05        # safety margin
         # Set random seed if provided
         if seed is not None:
             print(f"Setting RRT random seed: {seed}")
@@ -119,7 +120,7 @@ class OMPLRRTPlanner:
         # Will be set during planning
         self.validity_checker = None
         self.planner_type = planner_type
-        
+        self.check_resolution = check_resolution
     def plan(self, 
              start_config: np.ndarray,
              goal_configs: List[np.ndarray],
@@ -145,9 +146,9 @@ class OMPLRRTPlanner:
         self.validity_checker = ValidityCheckerWrapper(self.robot_sdf, self.robot_cdf, obstacle_points, 
                                                        self.dof, self.safety_margin, self.device)
         self.si.setStateValidityChecker(ob.StateValidityCheckerFn(self.validity_checker))
-        
-        check_resolution = 0.01    # 0.01 for 2 joints, 0.001 for 6 joints
-        self.si.setStateValidityCheckingResolution(check_resolution)
+          
+        # 0.01 for 2 joints, 0.001 for 6 joints
+        self.si.setStateValidityCheckingResolution(self.check_resolution)
         self.si.setup()
         
         all_results = []

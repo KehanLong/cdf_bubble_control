@@ -101,7 +101,8 @@ def get_rapidly_exploring(
     rng=None,
     profile=True,
     sample_fn=None,
-    early_termination=False
+    early_termination=False, 
+    all_goals_reached_check = True
 ):
     if rng is None:
         rng = np.random.default_rng()
@@ -143,10 +144,10 @@ def get_rapidly_exploring(
             
 
             # terminate if all goals are reached (may result in suboptimal planned path length)
-            # if all_goals_reached:
-            #     print("All goals reached! Terminating search.")
-            #     overlaps_graph = get_overlaps_graph_numpy(centers[:n_circles], radii[:n_circles])
-            #     return overlaps_graph, (centers[:n_circles], radii[:n_circles]), num_iterations
+            if all_goals_reached and all_goals_reached_check:
+                print("All goals reached! Terminating search.")
+                overlaps_graph = get_overlaps_graph_numpy(centers[:n_circles], radii[:n_circles])
+                return overlaps_graph, (centers[:n_circles], radii[:n_circles]), num_iterations
 
         # Use custom sampler if provided, otherwise use default sampling
         if sample_fn is not None:
@@ -265,7 +266,8 @@ def get_rapidly_exploring_connect(
     prc=0.1,
     rng=None,
     profile=True,
-    early_termination=False
+    early_termination=False,
+    stagnation_threshold=20
 ):
     # Modify end_point handling
     if end_point is not None:
@@ -326,6 +328,15 @@ def get_rapidly_exploring_connect(
     num_iterations = 0
     trees_connected = False
     
+    # Add stagnation tracking
+    last_progress = {
+        'start': {'circles': 0, 'iterations': 0},
+        'goals': [{
+            'circles': 0,
+            'iterations': 0
+        } for _ in range(num_goals)]
+    }
+
     def create_final_graph(start_centers, start_radii, goal_centers, goal_radii, goals_connected):
         """Create a graph containing only the start tree and connected goal trees"""
         # Start with the start tree
@@ -532,6 +543,48 @@ def get_rapidly_exploring_connect(
             print(f"Start circles: {n_start_circles}, " + 
                   ", ".join([f"Goal {i} circles: {n}" for i, n in enumerate(n_goal_circles)]) +
                   f", Iteration: {num_iterations}")
+
+        # Check for stagnation before processing new iteration
+        current_total_circles = n_start_circles + sum(n_goal_circles)
+        
+        # Update progress trackers
+        if num_iterations % (num_goals + 1) == 0:
+            # Start tree
+            if n_start_circles > last_progress['start']['circles']:
+                last_progress['start']['circles'] = n_start_circles
+                last_progress['start']['iterations'] = num_iterations
+        else:
+            # Goal tree
+            current_goal_idx = (num_iterations % (num_goals + 1)) - 1
+            if n_goal_circles[current_goal_idx] > last_progress['goals'][current_goal_idx]['circles']:
+                last_progress['goals'][current_goal_idx]['circles'] = n_goal_circles[current_goal_idx]
+                last_progress['goals'][current_goal_idx]['iterations'] = num_iterations
+
+        # Check if we're stuck (no progress in any tree for too long)
+        iterations_since_progress = num_iterations - max(
+            last_progress['start']['iterations'],
+            max(goal['iterations'] for goal in last_progress['goals'])
+        )
+        
+        if iterations_since_progress > stagnation_threshold:
+            print(f"\nStagnation detected - No progress for {iterations_since_progress} iterations")
+            print(f"Start tree: {n_start_circles} circles")
+            for i, n in enumerate(n_goal_circles):
+                print(f"Goal {i} tree: {n} circles (Connected: {goals_connected[i]})")
+                
+            if not any(goals_connected):
+                print("No goals connected - returning None")
+                return None, (None, None), num_iterations
+            else:
+                print(f"Some goals connected ({sum(goals_connected)}/{len(goals_connected)}) - creating partial graph")
+                overlaps_graph, (all_centers, all_radii) = create_final_graph(
+                    start_centers[:n_start_circles],
+                    start_radii[:n_start_circles],
+                    goal_centers,
+                    goal_radii,
+                    goals_connected
+                )
+                return overlaps_graph, (all_centers, all_radii), num_iterations
 
         num_iterations += 1
 

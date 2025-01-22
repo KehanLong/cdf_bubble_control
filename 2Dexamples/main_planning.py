@@ -172,7 +172,7 @@ if __name__ == "__main__":
     goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
 
     # Test different planners: bubble, bubble_connect, cdf_rrt, sdf_rrt
-    planner = 'bubble'
+    planner = 'sdf_rrt'
     result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
             max_bubble_samples=100, seed=seed, early_termination=False, 

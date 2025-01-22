@@ -138,7 +138,7 @@ class BubblePlanner:
         # min_cdf = max(min_cdf * 5., 0.05)   # 0.1 for safety
 
         # for xarm, use this
-        min_cdf = max(min_cdf + 0.1, 0.05)   # 0.1 for safety
+        min_cdf = max(min_cdf + 0.15, 0.05)   # 0.1 for safety
 
         
         return min_cdf
@@ -195,7 +195,7 @@ class BubblePlanner:
                     self.joint_limits[0],
                     self.joint_limits[1],
                     start_point=start_config,
-                    batch_size=10,
+                    batch_size=100,
                     max_num_iterations=int(self.max_iterations),
                     prc=self.goal_bias,
                     end_point=goal_configs,
@@ -224,7 +224,7 @@ class BubblePlanner:
                     self.joint_limits[1],
                     start_point=start_config,
                     end_point=goal_configs,
-                    batch_size=2,
+                    batch_size=100,                       # for 2D, batch_size small (ex: 2); for xArm, batch_size large (ex: 200)
                     max_num_iterations=int(self.max_iterations),
                     sample_fn=sampler,  # Use our custom sampler
                     rng=self.rng,
