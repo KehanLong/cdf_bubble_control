@@ -98,8 +98,8 @@ class CDFTrainer:
         self.q_min = self.robot_fk.joint_limits[:, 0]
         
         self.device = device
-        self.batch_x = 100
-        self.batch_q = 100
+        self.batch_x = 10
+        self.batch_q = 10
         self.max_q_per_link = 100
 
     def sample_q(self, batch_q=None):
@@ -166,16 +166,16 @@ def train_cdf_network(
         print(f"Loading pretrained model from: {pretrained_model}")
         model.load_state_dict(torch.load(pretrained_model))
         # Create new filenames for continued training
-        model_filename = f'best_model_bfgs_{activation}_3.pth'
-        final_model_filename = f'final_model_bfgs_{activation}_3.pth'
+        model_filename = f'best_model_bfgs_{activation}_5.pth'
+        final_model_filename = f'final_model_bfgs_{activation}_5.pth'
     else:
         model_filename = f'best_model_bfgs_{activation}.pth'
         final_model_filename = f'final_model_bfgs_{activation}_final.pth'
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5000,
-        threshold=0.01, verbose=True
+        optimizer, mode='min', factor=0.5, patience=int(num_epochs/5),
+        threshold=0.005, verbose=True
     )
     
     
@@ -210,15 +210,15 @@ def train_cdf_network(
             inputs=inputs,
             targets=targets,
             target_gradients=target_gradients,
-            value_weight=1.0,
-            gradient_weight=0.05,
-            eikonal_weight=0.02
+            value_weight=5.0,
+            gradient_weight=0.1,
+            eikonal_weight=0.01
         )
         
         # Backward pass and optimization
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         
         # Update scheduler
@@ -252,19 +252,23 @@ def train_cdf_network(
     return model, best_loss
 
 if __name__ == "__main__":
-
     set_random_seed(42)
     # Example usage
     contact_db_path = "data/cdf_data/refined_bfgs_100_contact_db.npy"
     model_save_dir = "trained_models/cdf"
-
-    pretrained_model = "trained_models/cdf/best_model_bfgs_gelu_2.pth"
+    
+    # Convert pretrained model path to absolute path
+    pretrained_model = "trained_models/cdf/best_model_bfgs_gelu_3.pth"
+    if not Path(pretrained_model).is_absolute():
+        pretrained_model = str(PROJECT_ROOT / pretrained_model)
+    
+    # print(f"Looking for pretrained model at: {pretrained_model}")
     
     model, final_loss = train_cdf_network(
         contact_db_path=contact_db_path,
         model_save_dir=model_save_dir,
-        num_epochs=400,
-        learning_rate=0.002,
+        num_epochs=5000,
+        learning_rate=0.001,
         device='cuda',
         loss_threshold=1e-4,
         activation='gelu',

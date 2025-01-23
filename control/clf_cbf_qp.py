@@ -12,6 +12,16 @@ class ClfCbfQpController:
 
         self.state_dim = state_dim
         self.control_limits = control_limits
+
+    
+        # Define Q matrix for CLF based on state dimension
+        Q_diag = np.ones(state_dim)
+        if state_dim == 2:
+            Q_diag[0] = 1.6  # Weight for first joint in 2D case
+        elif state_dim == 6:
+            # Linearly decreasing weights from 2.0 to 1.0
+            Q_diag = np.linspace(2.0, 1.0, 6)
+        self.Q = np.diag(Q_diag)
         
         # Setup the optimization solver
         self.setup_solver()
@@ -30,8 +40,9 @@ class ClfCbfQpController:
         
         # CLF computation
         error = current_config - reference_config
-        V = 0.5 * ca.dot(error, error)
-        dV_dtheta = error
+        Q = ca.DM(self.Q)
+        V = 0.5 * ca.mtimes([error.T, Q, error])  # Quadratic form with Q matrix
+        dV = ca.mtimes([error.T, Q, u])  # Derivative also includes Q matrix
         
         # Constraints
         g = []
@@ -39,12 +50,12 @@ class ClfCbfQpController:
         ubg = []
         
         # CLF constraint with slack
-        g.append(ca.dot(dV_dtheta, u) + self.clf_rate * V - delta)
+        g.append(dV + self.clf_rate * V - delta)
         lbg.append(-ca.inf)
         ubg.append(0)
         
         # CBF constraint
-        g.append(ca.dot(dh_dtheta, u) + self.cbf_rate * h + dh_dt)
+        g.append(ca.dot(dh_dtheta, u) + self.cbf_rate * (h - self.safety_margin) + dh_dt)
         lbg.append(0)
         ubg.append(ca.inf)
         

@@ -73,7 +73,7 @@ def create_multigoal_sampler(mins, maxs, goal_configs, p0=0.2, rng=None):
     return sample_fn
 
 class BubblePlanner:
-    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, device='cuda', seed=42, planner_type='bubble', early_termination=True):
+    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, batch_size=100, device='cuda', seed=42, planner_type='bubble', early_termination=True):
         """Initialize the bubble planner using CDF for collision checking"""
         self.random_seed = seed
         np.random.seed(seed)
@@ -96,13 +96,13 @@ class BubblePlanner:
         self.device = device
         
         # Planning parameters
-        self.epsilon = 1E-1        
-        self.min_radius = 1E-1     
-        self.num_samples = max_samples             
+        self.epsilon = 1E-1                          # 1E-1 for 2D, 1E-1 for xArm
+        self.min_radius = 1E-1                       # 5E-2 for 2D, 1E-1 for xArm
+        self.num_samples = max_samples               
         self.max_iterations = 5E4
         self.goal_bias = 0.1
         self.cdf_query_count = 0
-
+        self.batch_size = batch_size
         self.early_termination = early_termination
         
         # Planner type ('rrt' or 'rrt_connect')
@@ -138,7 +138,7 @@ class BubblePlanner:
         # min_cdf = max(min_cdf * 5., 0.05)   # 0.1 for safety
 
         # for xarm, use this
-        min_cdf = max(min_cdf + 0.15, 0.05)   # 0.1 for safety
+        # min_cdf = max(min_cdf + 0.15, 0.05)   # 0.1 for safety
 
         
         return min_cdf
@@ -195,7 +195,7 @@ class BubblePlanner:
                     self.joint_limits[0],
                     self.joint_limits[1],
                     start_point=start_config,
-                    batch_size=100,
+                    batch_size=self.batch_size,
                     max_num_iterations=int(self.max_iterations),
                     prc=self.goal_bias,
                     end_point=goal_configs,
@@ -224,12 +224,13 @@ class BubblePlanner:
                     self.joint_limits[1],
                     start_point=start_config,
                     end_point=goal_configs,
-                    batch_size=100,                       # for 2D, batch_size small (ex: 2); for xArm, batch_size large (ex: 200)
+                    batch_size=self.batch_size,                       # for 2D, batch_size small (e.g.: 2); for xArm, batch_size large (e.g.: 100)
                     max_num_iterations=int(self.max_iterations),
                     sample_fn=sampler,  # Use our custom sampler
                     rng=self.rng,
                     profile=False,
-                    early_termination=self.early_termination
+                    early_termination=self.early_termination,
+                    all_goals_reached_check=False
                 )
             
             print(f"Bubble generation complete. Number of bubbles: {len(overlaps_graph.vs)}")

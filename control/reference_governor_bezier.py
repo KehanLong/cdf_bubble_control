@@ -63,9 +63,11 @@ class BezierReferenceGovernor:
         
         # Compute distance to current reference point
         distance_to_ref = np.linalg.norm(z - gamma_s) * self.distance_scale
-        
-        # Reference governor dynamics
-        s_dot = (self.k / (1 + distance_to_ref)) * (1 - self.s**self.zeta)
+
+        max_distance = 1.0  # Maximum distance for barrier term
+
+        barrier_term = np.maximum(0, 1 - (distance_to_ref / max_distance)**2)
+        s_dot = self.k * barrier_term * (1 - self.s**self.zeta)
         
         # Update progress variable
         self.s += self.dt * s_dot

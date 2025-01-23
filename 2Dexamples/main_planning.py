@@ -59,7 +59,7 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
     if planner_type in ['bubble', 'bubble_connect']:
         # Use bubble planner
         planner = BubblePlanner(
-            robot_cdf, joint_limits, max_samples=max_bubble_samples, 
+            robot_cdf, joint_limits, max_samples=max_bubble_samples, batch_size=2,
             device=robot_cdf.device, seed=seed, planner_type=planner_type, 
             early_termination=early_termination
         )
@@ -172,7 +172,7 @@ if __name__ == "__main__":
     goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
 
     # Test different planners: bubble, bubble_connect, cdf_rrt, sdf_rrt
-    planner = 'sdf_rrt'
+    planner = 'bubble'
     result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
             max_bubble_samples=100, seed=seed, early_termination=False, 

@@ -113,9 +113,9 @@ def evaluate_sdf_cdf_correlation(device='cuda'):
             scene_contact.add_geometry(sphere_contact)
             scene_contact.show()
 
-def create_evaluation_dataset(batch_q_size=200, batch_x_size=1000, device='cuda', 
+def create_evaluation_dataset(batch_q_size=200, batch_x_size=300, device='cuda', 
                             save_path='data/cdf_data/evaluation_dataset.pt', 
-                            mini_batch_size=100):
+                            mini_batch_size=50):
     """
     Create evaluation dataset by processing mini-batches of points and configurations
     
@@ -126,7 +126,9 @@ def create_evaluation_dataset(batch_q_size=200, batch_x_size=1000, device='cuda'
         device: Computing device
         save_path: Where to save the dataset
     """
-    trainer = CDFTrainer("data/cdf_data/refined_bfgs_100_contact_db.npy", device=device)
+
+    contact_db_path = src_dir / "data/cdf_data/refined_bfgs_100_contact_db.npy"
+    trainer = CDFTrainer(contact_db_path, device=device)
     
     # Sample all points at once
     point_indices = torch.randint(0, len(trainer.valid_points), (batch_x_size,))
@@ -256,17 +258,46 @@ def evaluate_quantitative(eval_dataset_path='data/cdf_data/evaluation_dataset.pt
         'ground_truth': gt_cdf_values
     }
 
+def evaluate_all_datasets(base_path, device='cuda'):
+    """
+    Evaluate all 5 evaluation datasets and compute aggregate statistics
+    """
+    all_metrics = []
+    
+    for i in range(1, 5):
+        eval_path = os.path.join(base_path, f'data/cdf_data/evaluation_dataset_{i}.pt')
+        if not os.path.exists(eval_path):
+            print(f"Warning: Dataset {i} not found at {eval_path}")
+            continue
+            
+        print(f"\n=== Evaluating Dataset {i} ===")
+        metrics = evaluate_quantitative(eval_dataset_path=eval_path, device=device)
+        all_metrics.append(metrics)
+    
+    # Compute aggregate statistics
+    if all_metrics:
+        print("\n=== Aggregate Results ===")
+        mean_mse = np.mean([m['mse'] for m in all_metrics])
+        std_mse = np.std([m['mse'] for m in all_metrics])
+        mean_mae = np.mean([m['mae'] for m in all_metrics])
+        std_mae = np.std([m['mae'] for m in all_metrics])
+        mean_corr = np.mean([m['correlation'] for m in all_metrics])
+        std_corr = np.std([m['correlation'] for m in all_metrics])
+        
+        print(f"MSE: {mean_mse:.6f} ± {std_mse:.6f}")
+        print(f"MAE: {mean_mae:.6f} ± {std_mae:.6f}")
+        print(f"Correlation: {mean_corr:.6f} ± {std_corr:.6f}")
+    
+    return all_metrics
+
 if __name__ == "__main__":
     # Create evaluation dataset (only need to run once)
     
-    save_path = os.path.join(src_dir, 'data/cdf_data/evaluation_dataset_large.pt')
-    # create_evaluation_dataset(batch_q_size=200, batch_x_size=400, device='cuda', save_path=save_path)
+    # save_path = os.path.join(src_dir, 'data/cdf_data/evaluation_dataset_4.pt')
+    # create_evaluation_dataset(batch_q_size=100, batch_x_size=100, device='cuda', save_path=save_path)
     
-    # Run evaluation
-    eval_dataset_path = os.path.join(src_dir, 'data/cdf_data/evaluation_dataset.pt')
-    metrics = evaluate_quantitative(eval_dataset_path=eval_dataset_path)
+    # Run evaluation on all datasets
+    metrics = evaluate_all_datasets(src_dir)
     
-    # Qualitative evaluation (commented out by default)
-    evaluate_sdf_cdf_correlation()
-
-
+    # # Qualitative evaluation (commented out by default)
+    # evaluate_sdf_cdf_correlation()

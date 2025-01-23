@@ -12,15 +12,17 @@ sys.path.append(str(project_root))
 src_dir = os.path.dirname(os.path.abspath(__file__))
 
 from utils_visualization import create_animation
-from utils_new import compute_robot_distances
 from control.clf_cbf_qp import ClfCbfQpController
 from control.clf_dro_cbf import ClfCbfDrccpController
 from control.reference_governor import ReferenceGovernor
 from control.pd_control import PDController
 from control.reference_governor_bezier import BezierReferenceGovernor
-from main_planning import plan_and_visualize, RobotCDF, concatenate_obstacle_list
-from cdf_evaluate import load_learned_cdf
+from main_planning import plan_and_visualize, concatenate_obstacle_list
 from utils_env import create_obstacles
+
+from robot_sdf import RobotSDF
+from robot_cdf import RobotCDF
+from utils_new import inverse_kinematics_analytical
 
 
 
@@ -41,8 +43,13 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
         control_type: Controller type ('pd', 'clf_cbf', or 'clf_dro_cbf')
         use_bezier: Whether to use Bezier curves (True) or discrete waypoints (False)
     """
-    # Convert obstacles to JAX array with float32 dtype
-    obstacle_points = jnp.array(concatenate_obstacle_list(obstacles), dtype=jnp.float32)
+    # Convert obstacles to tensor (keep as 2D points)
+    obstacle_points = torch.tensor(concatenate_obstacle_list(obstacles), dtype=torch.float32)  # Shape: [N, 2]
+    
+    # Initialize RobotCDF
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    robot_cdf = RobotCDF(device)
+    obstacle_points = obstacle_points.to(device)
     
     # Initialize appropriate controller based on type
     if control_type == 'pd':
@@ -60,8 +67,8 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
     elif control_type == 'clf_dro_cbf':
         controller = ClfCbfDrccpController(
             p1=1.0, 
-            p2=1e1, 
-            clf_rate=1.0, 
+            p2=1e2, 
+            clf_rate=2.0, 
             cbf_rate=1.0, 
             wasserstein_r=0.01, 
             epsilon=0.1, 
@@ -78,7 +85,7 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
             trajectory_data=trajectory_data,
             dt=dt,
             k=0.2,  # Slower progression
-            zeta=8   # Smoother progression
+            zeta=10   # Smoother progression
         )
     else:
         print("Using discrete waypoint-based reference governor")
@@ -98,9 +105,6 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
     reference_configs = [current_config]
     reference_vels = [np.zeros_like(initial_config)]
     time = 0
-    
-    # Compute distances and gradients using JAX functions
-    compute_distances = jax.jit(compute_robot_distances)
     
     while time < duration:
         # Get reference from governor
@@ -122,42 +126,53 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
                 current_vel
             )
         else:  # clf_cbf or clf_dro_cbf
-            # Get all distances
-            distances = compute_distances(jnp.array(current_config, dtype=jnp.float32), obstacle_points)
+            # Convert current config to appropriate shape for RobotCDF and enable gradients
+            config_tensor = torch.tensor(current_config, dtype=torch.float32, device=device).unsqueeze(0)  # Shape: [1, 2]
+            config_tensor.requires_grad_(True)
+            
+            # Get CDF values (without gradients flag)
+            cdf_values = robot_cdf.query_cdf(
+                points=obstacle_points.unsqueeze(0),  # Shape: [1, N, 2]
+                joint_angles=config_tensor,           # Shape: [1, 2]
+                return_gradients=False
+            )
             
             if control_type == 'clf_cbf':
-                # Get minimum distance and its gradient
-                h = float(jnp.min(distances))
-                dh_dtheta = jax.grad(lambda q: jnp.min(compute_distances(q, obstacle_points)))(
-                    jnp.array(current_config, dtype=jnp.float32)  # Explicitly convert to float32
-                )
+                # Get minimum CDF value
+                h = float(torch.min(cdf_values).item())   # Adding safety margin
+                min_idx = torch.argmin(cdf_values)
+                
+                # Compute gradient for minimum value
+                h_val = cdf_values[0, min_idx]
+                h_val.backward()
+                dh_dtheta = config_tensor.grad.clone().cpu().numpy()[0]
+                config_tensor.grad.zero_()
                 
                 u = controller.generate_controller(
                     current_config,
                     reference_config,
                     h,
-                    np.array(dh_dtheta),
+                    dh_dtheta,
                     0.0  # Static obstacles, so dh/dt = 0
                 )
             else:  # clf_dro_cbf
-                # Get k smallest distances and their gradients
+                # Get k smallest CDF values
                 k = controller.num_samples
-                h_values = jnp.sort(distances)[:k]
+                h_values, indices = torch.topk(cdf_values[0], k, largest=False)
                 
+                # Compute gradients for k smallest values
                 h_grads = []
-                for i in range(k):
-                    def get_ith_smallest(q, i=i):
-                        dists = compute_distances(q, obstacle_points)
-                        return jnp.sort(dists)[i]
-                    
-                    grad_i = jax.grad(get_ith_smallest)(jnp.array(current_config))
-                    h_grads.append(np.array(grad_i))
+                for idx in indices:
+                    h_val = cdf_values[0, idx]
+                    h_val.backward(retain_graph=True)
+                    h_grads.append(config_tensor.grad.clone().cpu().numpy()[0])
+                    config_tensor.grad.zero_()
                 
                 u = controller.generate_controller(
                     current_config,
                     reference_config,
-                    np.array(h_values),
-                    np.array(h_grads),
+                    h_values.detach().cpu().numpy(),  # Adding safety margin
+                    np.stack(h_grads),
                     np.zeros(k)  # Static obstacles, so dh/dt = 0
                 )
         
@@ -197,34 +212,56 @@ def animate_path(obstacles: List[np.ndarray], tracked_configs, reference_configs
 
 if __name__ == "__main__":
     # Setup for planning
-    trained_model_path = os.path.join(src_dir, "trained_models/cdf_models/cdf_model_2_links_truncated_new.pt")
-    torch_model = load_learned_cdf(trained_model_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Create obstacles and setup
-    rng = np.random.default_rng(12345)
+    seed = 3
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    
+    rng = np.random.default_rng(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Create obstacles
     obstacles = create_obstacles(rng=rng)
-    robot_cdf = RobotCDF(torch_model, device, truncation_value=0.3)
+
+    # Initialize RobotCDF and RobotSDF classes
+    robot_cdf = RobotCDF(device=device)
+    robot_sdf = RobotSDF(device=device)
     
-    # Set configurations
-    initial_config = np.array([0, 0])
-    goal_config = np.array([2., 2.])
+    # Make sure the figures directory exists
+    os.makedirs(os.path.join(src_dir, 'figures'), exist_ok=True)
+
+    # Set initial configuration and goal position
+    initial_config = np.array([0., 0.], dtype=np.float32)
+    goal_pos = np.array([-2.5, 2.5], dtype=np.float32)     # Single goal position for end-effector
+
+    # find multiple goal configurations by inverse kinematics
+    goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
+
+    # Test different planners: bubble, bubble_connect, cdf_rrt, sdf_rrt
+    planner = 'bubble'
+    result = plan_and_visualize(
+            robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
+            max_bubble_samples=100, seed=seed, early_termination=False, 
+            planner_type=planner
+        )
     
-    # Plan path
-    planned_path = plan_and_visualize(robot_cdf, obstacles, initial_config, goal_config)
-    
-    if planned_path is None:
+    if result is None:
         print("Planning failed! Exiting...")
         sys.exit(1)
     
     # Execute control
     tracked_configs, reference_configs, tracked_vels, reference_vels = track_planned_path(
         obstacles, 
-        planned_path, 
+        result, 
         initial_config,
         dt=0.02, 
         duration=20.0,
-        control_type='clf_cbf',
+        control_type='pd',                # clf_cbf, clf_dro_cbf, pd
         use_bezier=True
     )
     

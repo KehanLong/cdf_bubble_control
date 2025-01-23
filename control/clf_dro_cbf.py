@@ -16,6 +16,16 @@ class ClfCbfDrccpController:
         self.num_samples = num_samples
         self.state_dim = state_dim  # Number of joints/states (same as control dim for arm)
         self.control_limits = control_limits
+        
+        # Define Q matrix for CLF based on state dimension
+        Q_diag = np.ones(state_dim)
+        if state_dim == 2:
+            Q_diag[0] = 1.6  # Weight for first joint in 2D case
+        elif state_dim == 6:
+            # Linearly decreasing weights from 2.0 to 1.0
+            Q_diag = np.linspace(2.0, 1.0, 6)
+        self.Q = np.diag(Q_diag)
+        
         self.prev_u = None
         self.solve_fail = False
         
@@ -38,8 +48,10 @@ class ClfCbfDrccpController:
         
         # CLF computation
         error = current_config - reference_config
-        V = 0.5 * ca.dot(error, error)
-        dV = ca.dot(error, u)
+        # Convert Q matrix to CasADi symbolic
+        Q = ca.DM(self.Q)
+        V = 0.5 * ca.mtimes([error.T, Q, error])  # Quadratic form with Q matrix
+        dV = ca.mtimes([error.T, Q, u])  # Derivative also includes Q matrix
         
         # Constraints
         g = []
