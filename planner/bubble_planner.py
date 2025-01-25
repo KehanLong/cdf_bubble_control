@@ -230,7 +230,7 @@ class BubblePlanner:
                     rng=self.rng,
                     profile=False,
                     early_termination=self.early_termination,
-                    all_goals_reached_check=False
+                    all_goals_reached_check=True
                 )
             
             print(f"Bubble generation complete. Number of bubbles: {len(overlaps_graph.vs)}")

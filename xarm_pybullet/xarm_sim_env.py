@@ -6,7 +6,9 @@ from robot_sdf import RobotSDF
 import time
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict
+import matplotlib.pyplot as plt
+import imageio
 
 
 @dataclass
@@ -22,6 +24,10 @@ class XArmEnvironment:
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
+        
+        # Disable the coordinate axes visualization
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+        # p.configureDebugVisualizer(p.COV_ENABLE_AXES, 0)
         
         # Get the directory where this script is located
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -91,55 +97,68 @@ class XArmEnvironment:
 
     def add_dynamic_obstacles(self, num_obstacles=3):
         """Add dynamic spherical obstacles with different motion patterns"""
+        # Define colors for each obstacle
+        colors = [
+            [1, 0, 0, 0.7],    # Red
+            [0, 0, 1, 0.7],    # Blue
+            [0.5, 0, 0.5, 0.7] # Purple
+        ]
+        
+        # Vertical moving obstacle
         visual_shape_id = p.createVisualShape(
             shapeType=p.GEOM_SPHERE,
             radius=0.04,
-            rgbaColor=[1, 0, 0, 0.7]  # Red, semi-transparent
+            rgbaColor=colors[0]  # Red
         )
         
-        # collision_shape_id = p.createCollisionShape(
-        #     shapeType=p.GEOM_SPHERE,
-        #     radius=0.03
-        # )
-        
-        # Vertical moving obstacle
         obstacle_id = p.createMultiBody(
-            baseMass=0,  # Mass of 0 makes it kinematic (not affected by physics)
-            #baseCollisionShapeIndex=collision_shape_id,
+            baseMass=0,
             baseVisualShapeIndex=visual_shape_id,
-            basePosition=[0.1, -0.1, 1.1],  # Start at middle height
+            basePosition=[0.1, -0.1, 1.1],
         )
         
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'vertical',
-            'center': [0.1, -0.1, 1.1],  # Middle position
+            'center': [0.0, -0.3, 1.1],  # Middle position
             'amplitude': 0.4,  # +/- 0.3m from center
             'frequency': 0.2,  # Oscillation frequency
             'phase': 0.0,      # Time tracking
         })
         
         # Horizontal moving obstacle
+        visual_shape_id = p.createVisualShape(
+            shapeType=p.GEOM_SPHERE,
+            radius=0.04,
+            rgbaColor=colors[1]  # Blue
+        )
+        
         obstacle_id = p.createMultiBody(
             baseMass=0,  # Mass of 0 makes it kinematic
             #baseCollisionShapeIndex=collision_shape_id,
             baseVisualShapeIndex=visual_shape_id,
-            basePosition=[0.0, -0.3, 1.2],  # Start at middle of horizontal path
+            basePosition=[0.0, 0.1, 1.2],  # Start at middle of horizontal path
         )
         
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'horizontal',
-            'center': [0.0, -0.3, 1.2],  # Fixed y and z
-            'amplitude': 0.5,  # +/- 0.3m in x direction
-            'frequency': 0.2,  # Oscillation frequency
+            'center': [0.0, 0.1, 1.2],  # Fixed y and z
+            'amplitude': 0.3,  # +/- 0.3m in x direction
+            'frequency': 0.05,  # Oscillation frequency
             'phase': 0.0,      # Time tracking
         })
         
         # Figure-8 moving obstacle
-        x = -0.1  # Starting x position
-        y = -0.3   # Different y positions
-        z = 0.8  # Fixed height
+        visual_shape_id = p.createVisualShape(
+            shapeType=p.GEOM_SPHERE,
+            radius=0.04,
+            rgbaColor=colors[2]  # Purple
+        )
+        
+        x = -0.1
+        y = -0.3
+        z = 0.8
         
         obstacle_id = p.createMultiBody(
             baseMass=0,  # Mass of 0 makes it kinematic
@@ -152,9 +171,9 @@ class XArmEnvironment:
             'id': obstacle_id,
             'type': 'figure8',
             'center': [x, y, z],
-            'amplitude': 0.2,  # Size of figure-8
-            'frequency': 0.3,  # Speed of motion
-            'phase': 0.0,  # Phase offset
+            'amplitude': 0.2,
+            'frequency': 0.3,
+            'phase': 0.0,
         })
 
     def update_dynamic_obstacles(self, dt):
@@ -602,7 +621,7 @@ class XArmEnvironment:
                     )
                     min_sdf = sdf_values.min().item()
                 
-                if min_sdf > 0:
+                if min_sdf > 0.05:    # some safety margin for the goal config
                     solution = IKSolution(
                         joint_angles=config,
                         task_dist=task_dist,
@@ -659,6 +678,150 @@ class XArmEnvironment:
             print(f"Link Name: {link_name}")
             print(f"Joint Type: {type_str}")
             print("-" * 50)
+
+    def capture_snapshot(self, camera_params: Dict, width: int = 1920, height: int = 1080, filename: str = None) -> np.ndarray:
+        """Capture a high-quality snapshot from a specific viewpoint"""
+        output_dir = "results/snapshots"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        filename = os.path.join(output_dir, f'snapshot_{filename}.png')
+        
+        view_matrix = p.computeViewMatrixFromYawPitchRoll(
+            cameraTargetPosition=camera_params.get('target', [0.0, 0.0, 1.5]),
+            distance=camera_params.get('distance', 2.5),
+            yaw=camera_params.get('yaw', 0),
+            pitch=camera_params.get('pitch', -30),
+            roll=camera_params.get('roll', 0),
+            upAxisIndex=2
+        )
+        
+        proj_matrix = p.computeProjectionMatrixFOV(
+            fov=60,
+            aspect=width/height,
+            nearVal=0.1,
+            farVal=100.0
+        )
+        
+        _, _, rgb, _, _ = p.getCameraImage(
+            width=width,
+            height=height,
+            viewMatrix=view_matrix,
+            projectionMatrix=proj_matrix,
+            renderer=p.ER_BULLET_HARDWARE_OPENGL
+        )
+        
+        img = np.array(rgb)[:, :, :3]
+        
+        if filename:
+            plt.imsave(filename, img)
+        
+        return img
+
+    def record_trajectory_video(self, trajectory, fps=30, width=1920, height=1080, planner_type=""):
+        """Record a video of the trajectory execution"""
+        output_dir = "results/videos"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        filename = os.path.join(output_dir, f'trajectory_{planner_type}.mp4')
+        
+        # Setup camera parameters
+        camera_params = {
+            'target': [0.0, 0.0, 1.5],
+            'distance': 2.5,
+            'yaw': 45,  # Angled view
+            'pitch': -30,
+            'roll': 0
+        }
+        
+        frames = []
+        print("\nRecording trajectory video...")
+        
+        for config in trajectory:
+            if isinstance(config, np.ndarray):
+                config = torch.tensor(config, device='cuda', dtype=torch.float32)
+            
+            # Set robot configuration
+            self._set_robot_configuration(config)
+            p.stepSimulation()
+            
+            # Capture frame
+            frame = self.capture_snapshot(camera_params, width=width, height=height)
+            frames.append(frame)
+        
+        # Save video using imageio
+        print(f"Saving video to: {filename}")
+        imageio.mimsave(filename, frames, fps=fps)
+        print("Video saved successfully!")
+        
+        return filename
+
+    def capture_trajectory_snapshots(self, trajectory, snapshot_indices=None, planner_type="", views=None):
+        """Capture snapshots of the trajectory from multiple viewpoints"""
+        if views is None:
+            views = [
+                {
+                    'name': 'front',
+                    'params': {'target': [0.0, 0.0, 1.5], 'distance': 2.5, 'yaw': 0, 'pitch': -30}
+                },
+                {
+                    'name': 'side',
+                    'params': {'target': [0.0, 0.0, 1.5], 'distance': 2.5, 'yaw': 90, 'pitch': -30}
+                },
+                {
+                    'name': 'top',
+                    'params': {'target': [0.0, 0.0, 1.5], 'distance': 2.5, 'yaw': 0, 'pitch': -89}
+                }
+            ]
+        
+        if snapshot_indices is None:
+            # Take snapshots at start, middle, and end of trajectory
+            snapshot_indices = [0, len(trajectory)//2, len(trajectory)-1]
+        
+        for idx in snapshot_indices:
+            config = trajectory[idx]
+            if isinstance(config, np.ndarray):
+                config = torch.tensor(config, device='cuda', dtype=torch.float32)
+            
+            # Set robot configuration
+            self._set_robot_configuration(config)
+            p.stepSimulation()
+            
+            # Capture from each viewpoint
+            for view in views:
+                filename = f"snapshot_{planner_type}_{view['name']}_waypoint_{idx}.png"
+                self.capture_snapshot(view['params'], filename=filename)
+                print(f"Saved snapshot: {filename}")
+
+    def plot_trajectory_metrics(self, goal_distances, sdf_distances, dt, planner_type=""):
+        """Plot trajectory metrics and save to file"""
+        time_steps = np.arange(len(goal_distances)) * dt
+        
+        plt.figure(figsize=(10, 6), dpi=300)
+        plt.plot(time_steps, goal_distances, color='red', linestyle=':', linewidth=3, label='Distance to Goal')
+        
+        if isinstance(sdf_distances, np.ndarray):
+            if sdf_distances.ndim == 1:
+                plt.plot(time_steps, sdf_distances, linewidth=3, label='Distance to Obstacle')
+            else:
+                if sdf_distances.ndim == 3:
+                    sdf_distances = sdf_distances.squeeze(1)
+                
+                num_obstacles = sdf_distances.shape[1]
+                for i in range(num_obstacles):
+                    if i == 0:
+                        plt.plot(time_steps, sdf_distances[:, i], linewidth=3, label='Distance to Obstacles')
+                    else:
+                        plt.plot(time_steps, sdf_distances[:, i], linewidth=3)
+        
+        plt.xlabel('Time (s)', fontsize=18)
+        plt.ylabel('Distance', fontsize=18)
+        plt.xticks(fontsize=18)
+        plt.yticks(fontsize=18)
+        plt.legend(fontsize=18, loc='upper right')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(f'distances_plot_{planner_type}.png', dpi=300)
+        plt.close()
 
 def main():
     """Demo script showing environment usage with IK"""

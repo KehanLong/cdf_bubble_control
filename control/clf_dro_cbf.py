@@ -20,10 +20,10 @@ class ClfCbfDrccpController:
         # Define Q matrix for CLF based on state dimension
         Q_diag = np.ones(state_dim)
         if state_dim == 2:
-            Q_diag[0] = 1.6  # Weight for first joint in 2D case
+            Q_diag[0] = 5.0  # Weight for first joint in 2D case
         elif state_dim == 6:
             # Linearly decreasing weights from 2.0 to 1.0
-            Q_diag = np.linspace(2.0, 1.0, 6)
+            Q_diag = np.linspace(5.0, 1.0, 6)
         self.Q = np.diag(Q_diag)
         
         self.prev_u = None

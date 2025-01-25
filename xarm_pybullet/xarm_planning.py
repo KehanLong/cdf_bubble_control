@@ -118,7 +118,7 @@ class XArmSDFVisualizer:
                 samples=400,
                 initial_horizon=self.initial_horizon
             )
-        elif planner_type in ['cdf_rrt', 'sdf_rrt']:
+        elif planner_type in ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect']:
             # Initialize OMPL RRT planner with seed
             joint_limits = (
                 self.robot_fk.joint_limits[:, 0].cpu().numpy(),
@@ -130,7 +130,7 @@ class XArmSDFVisualizer:
                 robot_fk=self.robot_fk,
                 joint_limits=joint_limits,
                 planner_type=planner_type,  # Pass planner type to use appropriate collision checker
-                check_resolution=0.001,
+                check_resolution=0.002,
                 device=self.device,
                 seed=seed
             )
@@ -143,7 +143,7 @@ class XArmSDFVisualizer:
                     self.robot_fk.joint_limits[:, 1].cpu().numpy()
                 ),
                 device=self.device,
-                max_samples=5e3,                # max number of bubbles in the graph
+                max_samples=1e4,                # max number of bubbles in the graph
                 seed=seed,                      # Pass seed to planner
                 planner_type=planner_type,      # planner type option: 'bubble' or 'bubble_connect'
                 early_termination=self.early_termination
@@ -249,6 +249,9 @@ class XArmSDFVisualizer:
         """Find valid goal configurations for a given goal position"""
         print(f"\nSearching for goal configurations:")
         print(f"Using random seed: {self.seed}")
+
+        debug_config = np.array([-1.417, -0.232, -0.40, 0.0, 0.632, -1.417], dtype=np.float32)
+        return [debug_config]
         
         if self.use_pybullet_inverse:
             # Use environment's IK solver
@@ -256,7 +259,7 @@ class XArmSDFVisualizer:
             
             # Add IK parameters
             ik_max_iterations = 5000
-            ik_threshold = 0.1
+            ik_threshold = threshold
             ik_max_solutions = 5
 
             self.env.set_ik_parameters(ik_max_iterations, ik_threshold, ik_max_solutions)
@@ -333,293 +336,185 @@ class XArmSDFVisualizer:
         
         return np.array(rgb)[:, :, :3]
 
-    def run_demo(self, duration=5.0, fps=20, execute_trajectory=True) -> Union[PlanningMetrics, Tuple[List, List]]:
-        print(f"Starting {self.planner_type.upper()} demo...")
-        
-        # Add debug prints for goal configurations
-        print("\nGoal configurations:")
-        if hasattr(self, 'goal_configs') and self.goal_configs is not None:
-            for i, config in enumerate(self.goal_configs):
-                print(f"Config {i+1}: {config}")
-        else:
-            print("No goal configurations set!")
-        
-        # Initialize lists to store distances and video frames
-        goal_distances = []
-        sdf_distances = []
-        frames = []
-        trajectory = None
-        
-        # Setup parameters
-        width = 1920
-        height = 1080
-        time_steps = int(duration * fps)
-        dt = 1.0 / fps
-        step = 0
-        
-        if self.planner_type in ['sdf_rrt', 'cdf_rrt']:
-            # RRT/RRT-Connect planning code
-            if not self._found_goal_configs:
-                goal_config = self._find_goal_configuration(self.goal - self.base_pos)
-                if goal_config is None:
-                    print("Failed to find valid goal configuration!")
-                    return None if not execute_trajectory else (goal_distances, sdf_distances)
-                self.goal_configs = goal_config
-            else:
-                goal_config = self.goal_configs
+    def run_demo(self, fps=20, execute_trajectory=True, save_snapshots=False) -> Union[PlanningMetrics, Tuple[List, List]]:
+        try:
+            print(f"Starting {self.planner_type.upper()} demo...")
+            
+            # Initialize lists to store metrics
+            goal_distances = []
+            sdf_distances = []
+            trajectory = None
+            dt = 1.0 / fps
+            
+            if self.planner_type in ['sdf_rrt', 'cdf_rrt', 'lazy_rrt', 'rrt_connect']:
+                # RRT/RRT-Connect planning code
+                if not self._found_goal_configs:
+                    goal_config = self._find_goal_configuration(self.goal - self.base_pos)
+                    if goal_config is None:
+                        print("Failed to find valid goal configuration!")
+                        return None if not execute_trajectory else (goal_distances, sdf_distances)
+                    self.goal_configs = goal_config
+                else:
+                    goal_config = self.goal_configs
 
-            # Get current state
-            current_state = self.get_current_joint_states()
-            
-            # Plan with OMPL RRT using only static points
-            result = self.rrt_planner.plan(
-                start_config=current_state.cpu().numpy(),
-                goal_configs=goal_config,
-                obstacle_points=self.points_robot,  # Using only static points for planning
-                max_time=100.0,
-                early_termination=self.early_termination
-            )
-
-            
-            if result['metrics'].success == False:
-                print("RRT planning failed!")
-                return None if not execute_trajectory else (goal_distances, sdf_distances)
-            
-            # Print planning metrics
-            metrics = result['metrics']
-            print("\nPlanning Statistics:")
-            print(f"Planning time: {metrics.planning_time:.3f} seconds")
-            print(f"Path length: {metrics.path_length:.3f}")
-            print(f"Number of collision checks: {metrics.num_collision_checks}")
-            print(f"Number of samples: {metrics.num_samples}")
-            print("---")
-                
-            trajectory = result['waypoints']
-            print(f"RRT path found with {len(trajectory)} waypoints")
-            
-            if not execute_trajectory:
-                return result['metrics']
-            
-            # Execute trajectory
-            print(f"\nExecuting {len(trajectory)} waypoints...")
-            for traj_idx in range(len(trajectory)):
-                # Update robot state
-                next_config = trajectory[traj_idx]
-                next_config_tensor = torch.tensor(next_config, device=self.device, dtype=torch.float32)
-                self.set_robot_configuration(next_config_tensor)
-                p.stepSimulation()
-                
-                # Record metrics
-                current_ee_pos = self.get_ee_position(next_config_tensor)
-                goal_dist = torch.norm(self.goal - current_ee_pos.squeeze())
-                goal_distances.append(goal_dist.detach().cpu().numpy())
-                
-                sdf_values = self.robot_sdf.query_sdf(
-                    points=self.points_robot.unsqueeze(0),
-                    joint_angles=next_config_tensor.unsqueeze(0),
-                    return_gradients=False
-                )
-                min_sdf = sdf_values.min()
-                sdf_distances.append(min_sdf.detach().cpu().numpy())
-                
-                # Capture frame
-                if self.use_gui:
-                    frames.append(self._capture_frame(traj_idx, len(trajectory), width, height))
-                    time.sleep(dt)
-                
-                if traj_idx % 10 == 0:
-                    print(f"Waypoint {traj_idx}/{len(trajectory)}")
-                    print(f"Distance to goal: {goal_dist.item():.4f}")
-                    print(f"Minimum SDF value: {min_sdf.item():.4f}")
-                    print("---")
-                
-                step += 1
-                torch.cuda.empty_cache()
-                
-        elif self.planner_type in ['bubble', 'bubble_connect']:
-            # Get start configuration
-            current_state = self.get_current_joint_states().cpu().numpy()
-            
-            # Convert goal from task space to joint space
-            if not self._found_goal_configs:
-                print("\nSearching for goal configurations...")
-                goal_config = self._find_goal_configuration(self.goal - self.base_pos)
-                if goal_config is None:
-                    print("Failed to find valid goal configuration!")
-                    return None if not execute_trajectory else (goal_distances, sdf_distances)
-                self.goal_configs = goal_config
-            else:
-                goal_config = self.goal_configs
-                print("\nUsing pre-computed goal configurations")
-
-            # Plan path using bubble planner
-            try:
-                
-                trajectory_whole = self.bubble_planner.plan(
-                    start_config=current_state,
+                # Get current state and plan
+                current_state = self.get_current_joint_states()
+                result = self.rrt_planner.plan(
+                    start_config=current_state.cpu().numpy(),
                     goal_configs=goal_config,
-                    obstacle_points=self.points_robot
+                    obstacle_points=self.points_robot,
+                    max_time=100.0,
+                    early_termination=self.early_termination
                 )
-
-                if trajectory_whole is None:
-                    print("Bubble planning failed!")
+                
+                if not result['metrics'].success:
+                    print("RRT planning failed!")
                     return None if not execute_trajectory else (goal_distances, sdf_distances)
                 
-                # Print planning metrics
-                metrics = trajectory_whole['metrics']
-                print("\nPlanning Statistics:")
-                print(f"Planning time: {metrics.planning_time:.3f} seconds")
-                print(f"Path length: {metrics.path_length:.3f}")
-                print(f"Number of collision checks: {metrics.num_collision_checks}")
-                print(f"Number of samples: {metrics.num_samples}")
-                print("---")
-                
-                trajectory = trajectory_whole['waypoints']
-                print(f"Bubble planner found path with {len(trajectory)} waypoints")
+                trajectory = result['waypoints']
+                print(f"RRT path found with {len(trajectory)} waypoints")
                 
                 if not execute_trajectory:
-                    return trajectory_whole
-                    
-                # Execute trajectory
-                traj_idx = 0
-                print(f"Starting execution of {len(trajectory)} waypoints...")
+                    return result
                 
-                while traj_idx < len(trajectory):  # Remove step < time_steps condition
-                    # Update robot state with explicit float32 conversion
-                    next_config = trajectory[traj_idx].astype(np.float32)
-                    next_config_tensor = torch.tensor(next_config, device=self.device, dtype=torch.float32)
-                    self.set_robot_configuration(next_config_tensor)
+            elif self.planner_type in ['bubble', 'bubble_connect']:
+                # Bubble planning code
+                current_state = self.get_current_joint_states().cpu().numpy()
+                
+                if not self._found_goal_configs:
+                    goal_config = self._find_goal_configuration(self.goal - self.base_pos)
+                    if goal_config is None:
+                        print("Failed to find valid goal configuration!")
+                        return None if not execute_trajectory else (goal_distances, sdf_distances)
+                    self.goal_configs = goal_config
+                else:
+                    goal_config = self.goal_configs
+
+                try:
+                    trajectory_result = self.bubble_planner.plan(
+                        start_config=current_state,
+                        goal_configs=goal_config,
+                        obstacle_points=self.points_robot
+                    )
+                    
+                    if trajectory_result is None:
+                        print("Bubble planning failed!")
+                        return None if not execute_trajectory else (goal_distances, sdf_distances)
+                    
+                    trajectory = trajectory_result['waypoints']
+                    print(f"Bubble planner found path with {len(trajectory)} waypoints")
+                    
+                    if not execute_trajectory:
+                        return trajectory_result
+                    
+                except Exception as e:
+                    print(f"Error during bubble planning: {str(e)}")
+                    return None if not execute_trajectory else (goal_distances, sdf_distances)
+            
+            # Execute trajectory and record metrics
+            if trajectory is not None and execute_trajectory:
+                print(f"\nExecuting {len(trajectory)} waypoints...")
+                
+                for traj_idx in range(len(trajectory)):
+                    # Update robot state
+                    next_config = trajectory[traj_idx]
+                    if isinstance(next_config, np.ndarray):
+                        next_config = torch.tensor(next_config, device=self.device, dtype=torch.float32)
+                    self.set_robot_configuration(next_config)
                     p.stepSimulation()
                     
                     # Record metrics
-                    current_ee_pos = self.get_ee_position(next_config_tensor)
+                    current_ee_pos = self.get_ee_position(next_config)
                     goal_dist = torch.norm(self.goal - current_ee_pos.squeeze())
                     goal_distances.append(goal_dist.detach().cpu().numpy())
-
-                    cdf_values = self.robot_cdf.query_cdf(
-                        points=self.points_robot.unsqueeze(0),
-                        joint_angles=next_config_tensor.unsqueeze(0),
-                        return_gradients=False
-                    )
-                    min_cdf = cdf_values.min()
-                    # print('cdf value', min_cdf)
                     
-                    # Use SDF for distance checking during execution
                     sdf_values = self.robot_sdf.query_sdf(
                         points=self.points_robot.unsqueeze(0),
-                        joint_angles=next_config_tensor.unsqueeze(0),
+                        joint_angles=next_config.unsqueeze(0),
                         return_gradients=False
                     )
                     min_sdf = sdf_values.min()
                     sdf_distances.append(min_sdf.detach().cpu().numpy())
                     
-                    # Capture frame
-                    if self.use_gui:
-                        frames.append(self._capture_frame(traj_idx, len(trajectory), width, height))
-                        time.sleep(dt)
-                    
-                    # Print progress
                     if traj_idx % 10 == 0:
                         print(f"Waypoint {traj_idx}/{len(trajectory)}")
                         print(f"Distance to goal: {goal_dist.item():.4f}")
                         print(f"Minimum SDF value: {min_sdf.item():.4f}")
                         print("---")
                     
-                    traj_idx += 1
+                    if self.use_gui:
+                        time.sleep(dt)
+                    
                     torch.cuda.empty_cache()
-                    
-            except Exception as e:
-                print(f"Error during bubble planning execution: {str(e)}")
-                return None if not execute_trajectory else (goal_distances, sdf_distances)
-            
-        else:  # MPPI
-            current_state = self.get_current_joint_states()
-            U = torch.zeros((self.initial_horizon, 6), device=self.device)
-            trajectory = []
-            
-            while step < time_steps:
-                # MPPI control step
-                states_final, action, U = self.mppi_controller(
-                    key=None,
-                    U=U,
-                    init_state=current_state,
-                    goal=self.goal,
-                    obstaclesX=self.points_robot,
-                    safety_margin=0.01
-                )
-                trajectory.append(current_state.cpu().numpy())
                 
-                if not execute_trajectory:
-                    continue
-                    
-                # Update robot state
-                next_state = current_state + action.squeeze() * dt
-                self.set_robot_configuration(next_state)
-                p.stepSimulation()
-                current_state = next_state
-                
-                # Record metrics
-                current_ee_pos = self.get_ee_position(current_state)
-                goal_dist = torch.norm(self.goal - current_ee_pos.squeeze())
-                goal_distances.append(goal_dist.detach().cpu().numpy())
-                
-                sdf_values = self.robot_sdf.query_sdf(
-                    points=self.points_robot.unsqueeze(0),
-                    joint_angles=current_state.unsqueeze(0),
-                    return_gradients=False
-                )
-                min_sdf = sdf_values.min()
-                sdf_distances.append(min_sdf.detach().cpu().numpy())
-                
-                # Capture frame
+                # Pause at the final configuration for 5 seconds
                 if self.use_gui:
-                    frames.append(self._capture_frame(step, time_steps, width, height))
-                    time.sleep(dt)
-                
-                # Print progress
-                if step % 10 == 0:
-                    print(f"Step {step}/{time_steps}")
-                    print(f"Distance to goal: {goal_dist.item():.4f}")
-                    print(f"Minimum SDF value: {min_sdf.item():.4f}")
-                    print("---")
-                
-                step += 1
-                torch.cuda.empty_cache()
+                    print("\nReached goal configuration. Pausing for 5 seconds...")
+                    time.sleep(5.0)
             
-            if not execute_trajectory:
-                return trajectory
+            # Save snapshots, video, and plot results
+            if save_snapshots and trajectory is not None:
+                print("\nRecording trajectory video...")
+                self.env.record_trajectory_video(
+                    trajectory=trajectory,
+                    fps=fps,
+                    planner_type=self.planner_type
+                )
+                
+                print("\nPlotting trajectory metrics...")
+                self.env.plot_trajectory_metrics(
+                    goal_distances=np.array(goal_distances),
+                    sdf_distances=np.array(sdf_distances),
+                    dt=dt,
+                    planner_type=self.planner_type
+                )
+            
+            return goal_distances, sdf_distances
         
-        # Save video and plot results
-        if frames:
-            print("Saving video...")
-            imageio.mimsave(f'{self.planner_type}_demo.mp4', frames, fps=fps)
+        except Exception as e:
+            print(f"Error during demo: {str(e)}")
+            return None if not execute_trajectory else ([], [])
         
-        print("Demo completed. Plotting distances...")
-        plot_distances(np.array(goal_distances), np.array(sdf_distances), obst_radius=0.05, dt=dt)
-        
-        return goal_distances, sdf_distances
+        finally:
+            # Only clean up if we're executing the trajectory
+            if execute_trajectory and hasattr(self, 'env'):
+                print("\nClosing PyBullet environment...")
+                if p.isConnected(self.physics_client):
+                    p.disconnect(self.physics_client)
+                self.env.close()
 
 if __name__ == "__main__":
     # Example usage for comparison
-    goal_pos = torch.tensor([0.22, 0.27, 0.66]  , device='cuda')     
+    goal_pos = torch.tensor([0.7, 0.15, 0.66], device='cuda')     
 
     # example goal pos: [0.7, 0.1, 0.6],  [0.2, 0.6, 0.6] , [0.22, 0.27, 0.66]   
 
     seed = 42
+    visualizer = None
 
-    # planner_type = 'bubble', 'bubble_connect', 'sdf_rrt', 'cdf_rrt'
-    visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble', 
-                                   seed=seed, use_pybullet_inverse=True, early_termination=True)  
+    try:
+        # planner_type = 'bubble', 'bubble_connect', 'sdf_rrt', 'cdf_rrt'
+        visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble', 
+                                       seed=seed, use_pybullet_inverse=True, early_termination=True)  
+        
+        # visualizer.goal_configs = [np.array([-1.4397272, -1.8688867, -1.0261794,  1.4388353,  1.5402647,
+        #     2.8958786], dtype=np.float32), np.array([ 1.6531591, -0.7119475, -0.9487262, -1.5808885,  1.6559765,
+        #    -1.6541713], dtype=np.float32), np.array([-1.3883772, -1.7281208, -1.0457752,  1.5484365,  1.7190738,
+        #     2.7941952], dtype=np.float32), np.array([-1.5003192 , -1.982543  , -0.87110025,  1.6527996 ,  1.3998513 ,
+        #     2.8629906 ], dtype=np.float32), np.array([-1.5302505 ,  0.39160264,  1.570477  ,  1.411324  ,  1.4478607 ,
+        #    -1.922108  ], dtype=np.float32)]
+
+        # visualizer._found_goal_configs = True  # Set flag to skip goal config search
+
+        # single demo
+        visualizer.run_demo(
+            fps=20,
+            execute_trajectory=True,
+            save_snapshots=False
+        )
     
-    # visualizer.goal_configs = [np.array([-1.4397272, -1.8688867, -1.0261794,  1.4388353,  1.5402647,
-    #     2.8958786], dtype=np.float32), np.array([ 1.6531591, -0.7119475, -0.9487262, -1.5808885,  1.6559765,
-    #    -1.6541713], dtype=np.float32), np.array([-1.3883772, -1.7281208, -1.0457752,  1.5484365,  1.7190738,
-    #     2.7941952], dtype=np.float32), np.array([-1.5003192 , -1.982543  , -0.87110025,  1.6527996 ,  1.3998513 ,
-    #     2.8629906 ], dtype=np.float32), np.array([-1.5302505 ,  0.39160264,  1.570477  ,  1.411324  ,  1.4478607 ,
-    #    -1.922108  ], dtype=np.float32)]
-
-    # visualizer._found_goal_configs = True  # Set flag to skip goal config search
-
-    # single demo
-    visualizer.run_demo(execute_trajectory=True)  
-    
+    finally:
+        # Only try to clean up if we haven't already
+        if visualizer is not None and hasattr(visualizer, 'env'):
+            if p.isConnected():
+                p.disconnect()  

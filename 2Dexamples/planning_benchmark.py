@@ -15,7 +15,7 @@ project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
 # Import based on which planner we're testing
-PLANNER_TYPE = "bubble"  # Change this to "rrt" for RRT planners
+PLANNER_TYPE = "lazy_rrt"  # Change this to "rrt" for RRT planners
 if PLANNER_TYPE == "bubble":
     from planner.bubble_planner import BubblePlanner
 else:
@@ -48,7 +48,8 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
     
     # Initialize robot models
     robot_cdf = RobotCDF(device=device)
-    robot_sdf = RobotSDF(device=device) if PLANNER_TYPE == "rrt" else None
+    # Initialize SDF model for RRT-based planners
+    robot_sdf = RobotSDF(device=device) if PLANNER_TYPE != "bubble" else None
     
     # Setup joint limits
     initial_config = np.array([0., 0.], dtype=np.float32)
@@ -84,7 +85,25 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
                 device=device,
                 seed=seed, 
                 planner_type='sdf_rrt'
-            )
+            ),
+            'lazy_rrt': OMPLRRTPlanner(
+                robot_sdf=robot_sdf,
+                robot_cdf=robot_cdf,
+                robot_fk=None,
+                joint_limits=joint_limits,
+                device=device,
+                seed=seed, 
+                planner_type='lazy_rrt'
+            ),
+            'rrt_connect': OMPLRRTPlanner(
+                robot_sdf=robot_sdf,
+                robot_cdf=robot_cdf,
+                robot_fk=None,
+                joint_limits=joint_limits,
+                device=device,
+                seed=seed, 
+                planner_type='rrt_connect'
+            ),
         }
     
     # Run experiments
@@ -182,4 +201,4 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
     return df, stats
 
 if __name__ == "__main__":
-    df, stats = run_planning_benchmark(num_envs=10, seed=4, early_termination=False, one_goal=False)
+    df, stats = run_planning_benchmark(num_envs=10, seed=4, early_termination=True, one_goal=False)

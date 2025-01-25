@@ -58,7 +58,7 @@ class XArmController:
             p2=1e0,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=self.cbf_rate,
-            wasserstein_r=0.03,
+            wasserstein_r=0.01,
             epsilon=0.1,
             num_samples=self.num_samples,  # Number of CBF samples to use
             state_dim=6,                #xArm6
@@ -81,46 +81,80 @@ class XArmController:
             # Ensure we need gradients
             current_joints.requires_grad_(True)
             
-            # Get full point cloud including dynamic obstacles and their velocities
-            full_points, point_velocities = self.env.get_full_point_cloud()
+            # Get point clouds with new format
+            point_data = self.env.get_full_point_cloud()
+            static_points = point_data['static']['points']
+            dynamic_points = point_data['dynamic']['points']
+            dynamic_velocities = point_data['dynamic']['velocities']
             
-            # Make points require gradients for computing dh_dp
-            full_points.requires_grad_(True)
+            # Combine all points for CDF query
+            all_points = torch.cat([static_points, dynamic_points], dim=0).unsqueeze(0)
+            all_points.requires_grad_(True)
             
-            # Get SDF values with gradients for points
+            # Get CDF values for all points
             h_values = self.planner.robot_cdf.query_cdf(
-                points=full_points,
+                points=all_points,
                 joint_angles=current_joints.unsqueeze(0),
                 return_gradients=False
             )
             
-            # Get minimum SDF/CDF value and index
-            h_min, min_idx = h_values.min(dim=1)
-            h = h_min - 0.35
+            # Create combined_h = h + dh/dt for ranking
+            combined_h = h_values[0].detach().clone() * self.cbf_rate
             
-            # Compute gradient w.r.t points (dh_dp)
+            # Compute dh/dt for dynamic obstacles and add to combined_h
+            num_static = static_points.shape[0]
+            for idx in range(num_static, all_points.shape[1]):
+                h_val = h_values[0, idx]
+                
+                # Compute dh/dt
+                h_val.backward(retain_graph=True)
+                dh_dp = all_points.grad[0, idx].clone()
+                all_points.grad.zero_()
+                current_joints.grad.zero_()
+                
+                dyn_idx = idx - num_static
+                dp_dt = dynamic_velocities[dyn_idx].to(torch.float64)
+                dh_dt = torch.dot(dh_dp, dp_dt).item()
+                
+                combined_h[idx] += dh_dt
+            
+            # Get the minimum value based on combined_h
+            min_idx = torch.argmin(combined_h)
+            h = h_values[0, min_idx] 
+            
+            # Print which type of obstacle is active
+            if min_idx < static_points.shape[0]:
+                print(f"Static obstacle active - h value: {h.item():.3f}")
+            else:
+                dyn_idx = min_idx - static_points.shape[0]
+                print(f"Dynamic obstacle {dyn_idx} active - h value: {h.item():.3f}")
+            
+            # Compute final gradients for the minimum point
             h.backward(retain_graph=True)
-            dh_dp = full_points.grad[0, min_idx].clone()  # Shape: (3,)
-            full_points.grad.zero_()
+            dh_dp = all_points.grad[0, min_idx].clone()
+            all_points.grad.zero_()
             
-            # Compute gradient w.r.t joints (dh_dtheta)
             h.backward()
             dh_dtheta = current_joints.grad.clone()
             current_joints.grad.zero_()
-
-            # Get velocity of closest point (dp_dt)
-            dp_dt = point_velocities[0, min_idx]  # Shape: (3,)
             
-            # Compute dh_dt using chain rule
-            dh_dt = torch.dot(dh_dp, dp_dt).item()  # Scalar value
+            # Compute dh_dt for the minimum point
+            if min_idx < static_points.shape[0]:
+                dp_dt = torch.zeros(3, device=self.device, dtype=torch.float64)
+            else:
+                dyn_idx = min_idx - static_points.shape[0]
+                dp_dt = dynamic_velocities[dyn_idx].to(torch.float64)
+            
+            dh_dt = torch.dot(dh_dp, dp_dt).item()
 
-            # Generate control input using CLF-CBF-QP with correct dh_dt
+            # Generate control input using CLF-CBF-QP
             velocity_cmd = self.clf_cbf_controller.generate_controller(
                 current_joints.detach().cpu().numpy(),
                 target_joints.cpu().numpy(),
                 h.item(),
                 dh_dtheta.cpu().numpy(),
-                dh_dt  # Now using the correct dh_dt
+                #dh_dt 
+                0      # static env
             )
             velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
@@ -171,6 +205,18 @@ class XArmController:
             k = self.num_samples
             top_k_values, top_k_indices = torch.topk(combined_h, k, largest=False)
             
+            # Count and print which types of obstacles are active
+            num_static = static_points.shape[0]
+            static_active = sum(1 for idx in top_k_indices if idx < num_static)
+            dynamic_active = sum(1 for idx in top_k_indices if idx >= num_static)
+            
+            print(f"Active obstacles in top {k} samples:")
+            if static_active > 0:
+                print(f"  - {static_active} static obstacles")
+            if dynamic_active > 0:
+                print(f"  - {dynamic_active} dynamic obstacles")
+            print(f"Minimum h value: {h_values[0, top_k_indices[0]].item():.3f}")
+            
             # Now compute gradients and collect samples for selected points
             h_grads = []
             h_samples = []
@@ -199,7 +245,9 @@ class XArmController:
                     dp_dt = dynamic_velocities[dyn_idx].to(torch.float64)
                 
                 dh_dt = torch.dot(dh_dp, dp_dt).item()
-                dh_dt_samples.append(dh_dt)
+                dh_dt_samples.append(dh_dt * 1.0)
+                # if static obstacles: 
+                # dh_dt_samples.append(0.0)
             
             # Convert to numpy arrays
             h_samples_np = np.array(h_samples)
@@ -327,7 +375,9 @@ class XArmController:
             step += 1
             
             # Break if we're close to the end of the trajectory
-            if s > 0.99 and goal_dist < 0.05:
+            if s > 0.995 and goal_dist < 0.03:
+                print("Goal reached!")
+                time.sleep(20.0)
                 break
 
             time.sleep(dt)
@@ -341,8 +391,10 @@ class XArmController:
 
 if __name__ == "__main__":
     # Example usage
-    goal_pos = torch.tensor([0.7, 0.2, 0.6], device='cuda')
-    planner_type = 'bubble_cdf'  # or other types
+    goal_pos = torch.tensor([0.7, 0.15, 0.66], device='cuda')
+    planner_type = 'bubble'  # or other types
+
+    trajectory_whole = None
     
     # Define cache file path
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -354,7 +406,6 @@ if __name__ == "__main__":
     )
     
     # Try to load from cache first
-    trajectory_whole = None
     if os.path.exists(cache_file):
         print(f"Loading trajectory from cache: {cache_file}")
         with open(cache_file, 'rb') as f:
@@ -363,30 +414,34 @@ if __name__ == "__main__":
     # If not in cache, plan new trajectory
     if trajectory_whole is None:
         print("Planning new trajectory...")
-        planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type)
+        planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble', 
+                                       seed=42, use_pybullet_inverse=True, early_termination=False)  
         trajectory_whole = planner.run_demo(execute_trajectory=False)
+
+        planner.env.close()
+
         
         # Save to cache if planning successful
         if trajectory_whole is not None:
             print(f"Saving trajectory to cache: {cache_file}")
             with open(cache_file, 'wb') as f:
                 pickle.dump(trajectory_whole, f)
-        
-        # Disconnect from PyBullet before creating new instance
-        p.disconnect()
     
     if trajectory_whole is not None:
-        # Initialize controller 
-        planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
-        controller = XArmController(planner, control_type='clf_dro_cbf')     # options: 'pd', 'clf_cbf' , 'clf_dro_cbf'
-        
-        if planner_type == 'bubble_cdf':
-            # For bubble_cdf planner, trajectory_whole is a dictionary
-            print(f"Original trajectory length: {len(trajectory_whole['waypoints'])}")
-            distances = controller.execute_trajectory(trajectory_whole, use_bezier=True, save_video=False)
-        else:
-            # For other planners, trajectory_whole is directly the waypoints
-            print(f"Original trajectory length: {len(trajectory_whole)}")
-            distances = controller.execute_trajectory(trajectory_whole)
+        try:
+            # Initialize controller 
+            planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
+            controller = XArmController(planner, control_type='clf_dro_cbf')
+            
+            if planner_type == 'bubble':
+                print(f"Original trajectory length: {len(trajectory_whole['waypoints'])}")
+                distances = controller.execute_trajectory(trajectory_whole, use_bezier=True, save_video=False)
+            else:
+                print(f"Original trajectory length: {len(trajectory_whole)}")
+                distances = controller.execute_trajectory(trajectory_whole)
+        finally:
+            # Ensure proper cleanup of the controller's planner
+            if 'controller' in locals() and hasattr(controller, 'planner'):
+                controller.planner.env.close()
     else:
         print("Failed to generate trajectory!") 

@@ -56,6 +56,11 @@ class ValidityCheckerWrapper:
             points=points,  # Shape: [1, N, 3]
             joint_angles=config  # Shape: [1, num_links]
         )
+
+        cdf_values = self.robot_cdf.query_cdf(
+            points=points,  # Shape: [1, N, 3]
+            joint_angles=config  # Shape: [1, num_links]
+        )
         
         # Debug prints for SDF values
         # print(f"SDF values shape: {sdf_values.shape}")
@@ -81,13 +86,15 @@ class OMPLRRTPlanner:
                  device: str = 'cuda',
                  seed: int = None):
         """
-        Initialize OMPL RRT planner
+        Initialize OMPL planner
         
         Args:
             robot_sdf: Robot SDF model
             robot_fk: Robot forward kinematics
             joint_limits: Tuple of (lower_limits, upper_limits)
-            planner_type: 'rrt', 'rrt_connect', or 'rrt_star'
+            planner_type: 'cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'informed_rrt', 
+                         'bit_star', 'rrt_star', 
+                         'rrt_connect'
             device: Computing device
             seed: Random seed for reproducibility
         """
@@ -98,9 +105,11 @@ class OMPLRRTPlanner:
         self.dof = len(joint_limits[0])
 
         if planner_type == 'cdf_rrt':
-            self.safety_margin = 0.1        # consistent with bubble planner
+            self.safety_margin = 0.05        # consistent with bubble planner
         elif planner_type == 'sdf_rrt':
-            self.safety_margin = 0.05        # safety margin
+            self.safety_margin = 0.02        # safety margin
+        else:
+            self.safety_margin = 0.02
         # Set random seed if provided
         if seed is not None:
             print(f"Setting RRT random seed: {seed}")
@@ -127,15 +136,16 @@ class OMPLRRTPlanner:
              obstacle_points: torch.Tensor,
              max_time: float = 30.0,
              return_metrics: bool = True,
-             early_termination: bool = True) -> Dict[str, Any]:
+             early_termination: bool = True,
+             optimization_time: float = None) -> Dict[str, Any]:
         """
-        Plan path using OMPL RRT with multiple goals
+        Plan a path using OMPL
         
         Args:
-            ...
-            early_termination: If True, return after finding first path to any goal
-                              If False, continue until paths to all goals are found
-                              or max_time is reached
+            early_termination: If True, return as soon as any valid path is found
+                             If False, continue optimizing until max_time is reached
+            optimization_time: For optimizing planners, how long to optimize after 
+                             finding first solution. If None, uses max_time.
         """
         print("\nPlanning Debug Info:")
         print(f"Start config: {start_config}")
@@ -174,19 +184,47 @@ class OMPLRRTPlanner:
                 mg.addState(goal)
             pdef.setGoal(mg)
             
-            # Create and setup planner
-            planner = og.RRT(self.si)
-            planner.setRange(0.1)
-            planner.setGoalBias(0.1)
+            # Create and setup planner based on type
+            if self.planner_type in ['sdf_rrt', 'cdf_rrt']:
+                planner = og.RRT(self.si)
+                planner.setRange(0.1)
+                planner.setGoalBias(0.1)
+            elif self.planner_type == 'rrt_star':
+                planner = og.RRTstar(self.si)
+                planner.setRange(0.1)
+                planner.setGoalBias(0.1)
+            elif self.planner_type == 'lazy_rrt':
+                planner = og.LazyRRT(self.si)
+                planner.setRange(0.1)
+                planner.setGoalBias(0.1)
+            elif self.planner_type == 'informed_rrt':
+                planner = og.InformedRRTstar(self.si)
+                planner.setRange(0.1)
+                planner.setGoalBias(0.1)
+            elif self.planner_type == 'bit_star':
+                planner = og.BITstar(self.si)
+            elif self.planner_type == 'rrt_connect':
+                planner = og.RRTConnect(self.si)
+                planner.setRange(0.1)  # Maximum length of motion to be added to a tree
+            else:
+                raise ValueError(f"Unknown planner type: {self.planner_type}")
+
             planner.setProblemDefinition(pdef)
             planner.setup()
             
-            # Solve with remaining time
-            remaining_time = max_time - (time.time() - start_time)
-            if remaining_time <= 0:
-                break
-            
-            solved = planner.solve(remaining_time)
+            # For optimizing planners, we might want to adjust the termination condition
+            if not early_termination and self.planner_type in ['rrt_star', 'informed_rrt', 'bit_star']:
+                # First find any solution
+                first_solution = planner.solve(ob.timedPlannerTerminationCondition(max_time))
+                
+                if first_solution:
+                    # If found, spend additional time optimizing
+                    opt_time = optimization_time if optimization_time is not None else max_time
+                    planner.solve(ob.timedPlannerTerminationCondition(opt_time))
+                solved = first_solution
+            else:
+                # Stop as soon as any valid solution is found
+                solved = planner.solve(ob.timedPlannerTerminationCondition(max_time))
             
             if solved:
                 path = pdef.getSolutionPath()

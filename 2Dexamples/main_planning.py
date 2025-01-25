@@ -36,7 +36,7 @@ def concatenate_obstacle_list(obstacle_list):
 
 def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
                       max_bubble_samples=500, seed=42, early_termination=False, 
-                      planner_type='bubble'):
+                      planner_type='bubble', visualize=True):
     """
     Plan and visualize a path using different planners
     
@@ -65,29 +65,20 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
         )
         result = planner.plan(initial_config, goal_configs, obstacle_points)
         
-    elif planner_type in ['cdf_rrt', 'sdf_rrt']:
+    elif planner_type in ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect', 'informed_rrt', 'bit_star', 'rrt_star', 'bit']:
         # Use OMPL RRT planner
         # Choose which robot model to use for collision checking
-        if planner_type == 'cdf_rrt':
-            planner = OMPLRRTPlanner(
-                robot_sdf=robot_sdf,  # sdf model
-                robot_cdf=robot_cdf,  # cdf model
-                robot_fk=None,  # Not needed for 2D case
-                joint_limits=joint_limits,
-                planner_type='cdf_rrt',
-                device=robot_cdf.device,
-                seed=seed
-            )
-        elif planner_type == 'sdf_rrt':
-            planner = OMPLRRTPlanner(
-                robot_sdf=robot_sdf,  # sdf model
-                robot_cdf=robot_cdf,  # cdf model
-                robot_fk=None,  # Not needed for 2D case
-                joint_limits=joint_limits,
-                planner_type='sdf_rrt',
-                device=robot_cdf.device,
-                seed=seed
-            )
+
+        planner = OMPLRRTPlanner(
+            robot_sdf=robot_sdf,  # sdf model
+            robot_cdf=robot_cdf,  # cdf model
+            robot_fk=None,  # Not needed for 2D case
+            joint_limits=joint_limits,
+            planner_type=planner_type,
+            device=robot_cdf.device,
+            seed=seed
+        )
+
         
         # Try each goal configuration until success or all failed
         result = None
@@ -124,18 +115,19 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
         print(f"Reached goal index: {metrics.reached_goal_index}")
     
     # Create visualization
-    if planner_type in ['bubble', 'bubble_connect']:
-        visualize_results(obstacles, initial_config, goal_configs, 
+    if visualize:
+        if planner_type in ['bubble', 'bubble_connect']:
+            visualize_results(obstacles, initial_config, goal_configs, 
                          trajectory, src_dir=src_dir)
         
-        visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, 
+            visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, 
                                     trajectory, result['bubbles'], 
                                     obstacle_points, src_dir, planner_type=planner_type)
-    else:  # cdf_rrt or sdf_rrt
-        visualize_results(obstacles, initial_config, goal_configs, 
+        else:  # cdf_rrt or sdf_rrt
+            visualize_results(obstacles, initial_config, goal_configs, 
                          trajectory, src_dir=src_dir)
         
-        visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_configs, 
+            visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_configs, 
                                   trajectory, obstacle_points, src_dir, 
                                   planner_type=planner_type)
     
@@ -171,8 +163,8 @@ if __name__ == "__main__":
     # find multiple goal configurations by inverse kinematics
     goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
 
-    # Test different planners: bubble, bubble_connect, cdf_rrt, sdf_rrt
-    planner = 'bubble'
+    # Test different planners: bubble, bubble_connect, cdf_rrt, sdf_rrt, lazy_rrt, informed_rrt, bit_star, rrt_star,  rrt_connect
+    planner = 'sdf_rrt'
     result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
             max_bubble_samples=100, seed=seed, early_termination=False, 

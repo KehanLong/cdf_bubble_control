@@ -5,7 +5,105 @@ import os
 from typing import List
 import torch
 
-from utils_env import plot_environment
+from utils_env import plot_environment, create_dynamic_obstacles, forward_kinematics
+
+def visualize_control_snapshot(obstacles, tracked_configs, reference_configs, t_idx, dt,
+                             save_path=None, figsize=(10, 10)):
+    """
+    Create a publication-quality snapshot of the robot arm at a specific time step.
+    
+    Args:
+        obstacles: List of static obstacle arrays
+        tracked_configs: Array of tracked configurations
+        reference_configs: Array of reference configurations
+        t_idx: Time index for the snapshot
+        dt: Time step between frames
+        save_path: Path to save the figure
+        figsize: Figure size (width, height) in inches
+    """
+    t = t_idx * dt
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot static obstacles
+    for obstacle in obstacles:
+        ax.fill(obstacle[:, 0], obstacle[:, 1], alpha=0.5)
+        ax.scatter(obstacle[:, 0], obstacle[:, 1], color='red', s=1, alpha=0.8)
+    
+    # Plot end-effector trajectory up to current time
+    ee_positions = []
+    for config in tracked_configs[:t_idx+1]:
+        x, y = forward_kinematics(config)
+        ee_positions.append([x[-1], y[-1]])  # Take the last point (end-effector)
+    ee_positions = np.array(ee_positions)
+    
+    ax.plot(ee_positions[:, 0], ee_positions[:, 1], '--', color='red', alpha=0.7, linewidth=3, label='End-effector')
+    
+    # Plot dynamic obstacles with velocity arrows
+    dynamic_obs, dynamic_vels = create_dynamic_obstacles(t, num_points=50)
+    for obs_idx, (obs, vel) in enumerate(zip(dynamic_obs, dynamic_vels)):
+        # Plot obstacle
+        ax.fill(obs[:, 0], obs[:, 1], color='purple', alpha=0.5)
+        ax.scatter(obs[:, 0], obs[:, 1], color='purple', s=1, alpha=0.8)
+        
+        # Plot velocity arrow
+        center = np.mean(obs, axis=0)
+        vel_mean = vel[0]  # All points have same velocity
+        speed = np.linalg.norm(vel_mean)
+        # Scale arrow length based on speed
+        arrow_scale = 1.0
+        ax.arrow(center[0], center[1], 
+                vel_mean[0] * arrow_scale, vel_mean[1] * arrow_scale,
+                head_width=0.3, head_length=0.4, fc='purple', ec='purple', alpha=1.0)
+        # Add speed label, shifted to the right
+        # ax.text(center[0] + 0.3, center[1] + 0.3, f'v = {speed:.1f} m/s', 
+        #         horizontalalignment='left', fontsize=24)
+    
+    # Plot current configuration
+    plot_environment(obstacles, tracked_configs[t_idx], ax=ax, robot_color='blue', 
+                    plot_obstacles=False, label='Current', highlight_joints=True)
+    
+    # Plot reference configuration
+    plot_environment(obstacles, reference_configs[t_idx], ax=ax, robot_color='green', 
+                    plot_obstacles=False, label='Reference', robot_alpha=0.5)
+    
+    # Clean up the plot
+    ax.set_aspect('equal')
+    ax.tick_params(axis='both', which='major', labelsize=26)
+    ax.set_xlabel('X', fontsize=28)
+    ax.set_ylabel('Y', fontsize=28)
+    ax.legend(fontsize=26, loc='lower right')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Snapshot saved as {save_path}")
+        plt.close()
+    else:
+        plt.show()
+
+def save_control_snapshots(obstacles, tracked_configs, reference_configs, dt, output_dir):
+    """
+    Save snapshots at specific time points during the control execution.
+    
+    Args:
+        obstacles: List of static obstacle arrays
+        tracked_configs: Array of tracked configurations
+        reference_configs: Array of reference configurations
+        dt: Time step between frames
+        output_dir: Directory to save snapshots
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define time points for snapshots (in seconds)
+    snapshot_times = [0.0, 8.0, 10.5, 20.1]  # Adjust as needed
+    
+    for t in snapshot_times:
+        t_idx = int(t / dt)
+        if t_idx < len(tracked_configs):
+            save_path = os.path.join(output_dir, f'control_snapshot_t{t:.1f}.png')
+            visualize_control_snapshot(obstacles, tracked_configs, reference_configs, 
+                                    t_idx, dt, save_path=save_path)
 
 
 def visualize_results(obstacles, initial_config, goal_configs, trajectory, src_dir):
@@ -150,59 +248,6 @@ def plot_path_comparison(planned_configs, tracked_configs, src_dir):
     print("Saved path comparison plot")
     plt.close()
 
-def create_animation(obstacles: List[np.ndarray], tracked_configs, reference_configs, 
-                    dt: float = 0.02, src_dir=None):
-    """
-    Create an animation of the robot arm tracking the planned path.
-    
-    Args:
-        obstacles: List of obstacle arrays
-        tracked_configs: Array of tracked configurations
-        reference_configs: Array of reference configurations
-        dt: Time step between frames (seconds)
-        src_dir: Source directory for saving the animation
-    """
-    # Calculate fps based on the timestep
-    fps = int(1/dt)
-    
-    n_configs = len(tracked_configs)
-    print(f"\nCreating animation for {n_configs} configurations (dt={dt}s, fps={fps})")
-    
-    # Create frames based on the number of configurations
-    frames = []
-    fig, ax = plt.subplots(figsize=(10, 10))
-    
-    for i in range(n_configs):
-        ax.clear()
-        current_config = tracked_configs[i]
-        
-        # Plot the environment and current configuration
-        plot_environment(obstacles, current_config, ax=ax, robot_color='blue', label='Current')
-        
-        # Plot reference configuration
-        plot_environment(obstacles, reference_configs[i], ax=ax, robot_color='green', 
-                        plot_obstacles=False, label='Reference', robot_alpha=0.5)
-        
-        # Set consistent axis limits
-        ax.set_title(f'Frame {i}/{n_configs}')
-        ax.legend()
-        
-        # Convert plot to RGB array
-        fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        frames.append(image)
-    
-    plt.close(fig)
-    
-    if src_dir:
-        # Save animation
-        print("Saving animation...")
-        output_path = os.path.join(src_dir, 'figures/robot_animation.mp4')
-        imageio.mimsave(output_path, frames, fps=fps)
-        print(f"Animation saved as '{output_path}'")
-    
-    return frames
 
 def visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, trajectory, bubbles, 
                           obstacle_points, src_dir, planner_type='bubble', resolution=50):
@@ -538,18 +583,17 @@ def visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_confi
         marker = '^' if i == 0 else 's'  # triangle for first goal, square for second
         ax.scatter(goal[0], goal[1], color='r', marker=marker, s=100, label=f'Goal {i+1}')
     
-    ax.set_xlabel('θ₁', fontsize=14)
-    ax.set_ylabel('θ₂', fontsize=14)
-    ax.set_title('OMPL RRT Planning Visualization', fontsize=16)
+    # Make planner name more readable for the title
+    planner_title = planner_type.replace('_', ' ').upper()
+    ax.set_xlabel('θ₁', fontsize=18)
+    ax.set_ylabel('θ₂', fontsize=18)
+    ax.set_title(f'OMPL {planner_title} Planning Visualization', fontsize=18)
     ax.legend(fontsize=12)
     
     # Save figure
-    if planner_type == 'cdf_rrt':
-        plt.savefig(os.path.join(src_dir, 'figures/rrt_cdf_planning_visualization.png'), 
-                    bbox_inches='tight', dpi=300)
-    else:
-        plt.savefig(os.path.join(src_dir, 'figures/rrt_sdf_planning_visualization.png'), 
-                    bbox_inches='tight', dpi=300)
+    planner_name = planner_type.replace('_', '-')  # Make filename more readable
+    plt.savefig(os.path.join(src_dir, f'figures/ompl_{planner_name}_planning_visualization.png'), 
+                bbox_inches='tight', dpi=300)
     plt.close()
 
 if __name__ == "__main__":

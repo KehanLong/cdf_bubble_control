@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 import torch
 from typing import List, Tuple, Optional
 import random
+import os
+import imageio
+
 
 def create_circle(center: Tuple[float, float], radius: float, num_points: int = 100) -> np.ndarray:
     theta = np.linspace(0, 2*np.pi, num_points)
@@ -141,6 +144,133 @@ def plot_environment(obstacles: List[np.ndarray], arm_angles: np.ndarray,
         print(f"Figure saved as {save_path}")
     
     return fig, ax
+
+def create_dynamic_obstacles(t: float, num_points: int = 50) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    """
+    Create dynamic obstacles at time t with bouncing motion between start and goal positions.
+    
+    Args:
+        t: Current time in seconds
+        num_points: Number of points to sample on each obstacle surface
+        
+    Returns:
+        Tuple of (obstacle_points, obstacle_velocities)
+        - obstacle_points: List of obstacle point clouds at time t
+        - obstacle_velocities: List of velocity vectors for each point in the obstacles
+    """
+    obstacles = []
+    velocities = []
+    
+    # First obstacle: moving horizontally
+    start1 = (-4.5, 1.7)
+    goal1 = (4.5, 1.7)
+    speed1 = 0.6  # m/s
+    distance1 = np.linalg.norm(np.array(start1) - np.array(goal1))  # Total distance between start and goal
+    cycle_time1 = distance1 / speed1  # Time for one-way trip
+    
+    # Calculate current position and velocity
+    t1 = t % (2 * cycle_time1)
+    if t1 <= cycle_time1:
+        # Moving towards goal
+        velocity1 = np.array([speed1, 0.0])
+        progress = t1 / cycle_time1
+        x1 = start1[0] + (goal1[0] - start1[0]) * progress
+    else:
+        # Moving back to start
+        velocity1 = np.array([-speed1, 0.0])
+        progress = (t1 - cycle_time1) / cycle_time1
+        x1 = goal1[0] + (start1[0] - goal1[0]) * progress
+    
+    center1 = (x1, start1[1])
+    obstacle1 = create_circle(center1, radius=0.5, num_points=num_points)
+    obstacles.append(obstacle1)
+    velocities.append(np.tile(velocity1, (num_points, 1)))  # Same velocity for all points
+    
+    # Second obstacle: moving vertically
+    start2 = (-2, 4.5)
+    goal2 = (-2, -4.5)
+    speed2 = 0.5  # m/s
+    distance2 = np.linalg.norm(np.array(start2) - np.array(goal2))  # Total distance between start and goal
+    cycle_time2 = distance2 / speed2  # Time for one-way trip
+    
+    # Calculate current position and velocity
+    t2 = t % (2 * cycle_time2)
+    if t2 <= cycle_time2:
+        # Moving towards goal
+        velocity2 = np.array([0.0, -speed2])
+        progress = t2 / cycle_time2
+        y2 = start2[1] + (goal2[1] - start2[1]) * progress
+    else:
+        # Moving back to start
+        velocity2 = np.array([0.0, speed2])
+        progress = (t2 - cycle_time2) / cycle_time2
+        y2 = goal2[1] + (start2[1] - goal2[1]) * progress
+    
+    center2 = (start2[0], y2)
+    obstacle2 = create_circle(center2, radius=0.5, num_points=num_points)
+    obstacles.append(obstacle2)
+    velocities.append(np.tile(velocity2, (num_points, 1)))  # Same velocity for all points
+    
+    return obstacles, velocities
+
+def create_animation(obstacles: List[np.ndarray], tracked_configs, reference_configs, 
+                    dt: float = 0.02, src_dir=None, dynamic_obstacles: bool = False):
+    """
+    Create an animation of the robot arm tracking the planned path.
+    
+    Args:
+        obstacles: List of static obstacle arrays
+        tracked_configs: Array of tracked configurations
+        reference_configs: Array of reference configurations
+        dt: Time step between frames (seconds)
+        src_dir: Source directory for saving the animation
+        dynamic_obstacles: Whether to include dynamic obstacles
+    """
+    fps = int(1/dt)
+    
+    n_configs = len(tracked_configs)
+    print(f"\nCreating animation for {n_configs} configurations (dt={dt}s, fps={fps})")
+    
+    frames = []
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    for i in range(n_configs):
+        ax.clear()
+        current_config = tracked_configs[i]
+        t = i * dt  # Current time
+        
+        # Plot the static environment and current configuration
+        plot_environment(obstacles, current_config, ax=ax, robot_color='blue', label='Current')
+        
+        # Add dynamic obstacles if requested
+        if dynamic_obstacles:
+            dynamic_obs, dynamic_vels = create_dynamic_obstacles(t, num_points=50)
+            for obs, vel in zip(dynamic_obs, dynamic_vels):
+                ax.fill(obs[:, 0], obs[:, 1], color='purple', alpha=0.5)
+                ax.scatter(obs[:, 0], obs[:, 1], color='purple', s=1, alpha=0.8)
+        
+        # Plot reference configuration
+        plot_environment(obstacles, reference_configs[i], ax=ax, robot_color='green', 
+                        plot_obstacles=False, label='Reference', robot_alpha=0.5)
+        
+        ax.set_title(f'Time: {t:.2f}s')
+        ax.legend()
+        
+        # Convert plot to RGB array
+        fig.canvas.draw()
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
+        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        frames.append(image)
+    
+    plt.close(fig)
+    
+    if src_dir:
+        print("Saving animation...")
+        output_path = os.path.join(src_dir, 'figures/robot_animation.mp4')
+        imageio.mimsave(output_path, frames, fps=fps)
+        print(f"Animation saved as '{output_path}'")
+    
+    return frames
 
 def forward_kinematics(joint_angles):
     # Convert input to torch tensor if it's not already
