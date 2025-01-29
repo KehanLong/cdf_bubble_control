@@ -36,12 +36,18 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
 
     
     # Define goal positions
+    # goal_positions = np.array([
+    #     [0, 3], [0, 3.5], [-0.5, 3], [-1, 3], [-1.5, 2.5],
+    #     [-2, -2], [-2.5, 1.5], [-3, 1],  [-3.5, 0],
+    #     [-3.5, -0.5], [-3, -1], [-2.5, -0.5], [-2, -1], [-2, -1.5],
+    #     [-0.5, -3], [0, -3]
+    # ])
+
     goal_positions = np.array([
-        [0, 3], [0, 3.5], [-0.5, 3], [-1, 3], [-1.5, 2.5],
-        [-2, -2], [-2.5, 1.5], [-3, 1],  [-3.5, 0],
-        [-3.5, -0.5], [-3, -1], [-2.5, -0.5], [-2, -1], [-2, -1.5],
-        [-0.5, -3], [0, -3], [0, -3.5]
+        [0, 3], [0, 3.5], [-3, 1], [-2.5, -0.5]
     ])
+
+    
     
     # Initialize results storage
     results = []
@@ -62,8 +68,12 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
     if PLANNER_TYPE == "bubble":
         planners = {
             'bubble': BubblePlanner(
-                robot_cdf, joint_limits, max_samples=300,
+                robot_cdf, joint_limits, max_samples=300, batch_size=2,
                 device=device, seed=seed, early_termination=early_termination
+            ),
+            'bubble_connect': BubblePlanner(
+                robot_cdf, joint_limits, max_samples=300, batch_size=2,
+                device=device, seed=seed, early_termination=early_termination, planner_type='bubble_connect'
             )
         }
     else:  # rrt
@@ -123,10 +133,14 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
         goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
         
         # Convert goal configs to tensor and check CDF values
-        # goal_configs_tensor = torch.tensor(np.stack(goal_configs), device=device)
-        # cdf_values = robot_cdf.query_cdf(obstacle_points.unsqueeze(0).expand(len(goal_configs), -1, -1), 
-        #                                 goal_configs_tensor)
-        # print(f"CDF values at goal configs: {cdf_values.min(dim=1)[0]}")
+        goal_configs_tensor = torch.tensor(np.stack(goal_configs), device=device)
+        cdf_values = robot_cdf.query_cdf(obstacle_points.unsqueeze(0).expand(len(goal_configs), -1, -1), 
+                                        goal_configs_tensor)
+
+        # Skip trial if any goal configuration has CDF value below threshold
+        if torch.any(cdf_values.min(dim=1)[0] < 0.1):
+            print(f"Skipping trial - found goal configuration with CDF value below threshold")
+            continue
 
         if one_goal:
             goal_configs = np.array([goal_configs[rng.integers(0, len(goal_configs))]])  # Keep as 2D array
@@ -148,7 +162,8 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
                         max_time=10.0,
                         early_termination=early_termination
                     )
-                
+            
+    
                 # Store results
                 if result is not None and result['metrics'].success:
                     results.append({
@@ -201,4 +216,4 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
     return df, stats
 
 if __name__ == "__main__":
-    df, stats = run_planning_benchmark(num_envs=10, seed=4, early_termination=True, one_goal=False)
+    df, stats = run_planning_benchmark(num_envs=100, seed=2, early_termination=True, one_goal=False)

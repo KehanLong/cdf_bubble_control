@@ -17,10 +17,11 @@ class ClfCbfDrccpController:
         self.state_dim = state_dim  # Number of joints/states (same as control dim for arm)
         self.control_limits = control_limits
         
+        
         # Define Q matrix for CLF based on state dimension
         Q_diag = np.ones(state_dim)
         if state_dim == 2:
-            Q_diag[0] = 5.0  # Weight for first joint in 2D case
+            Q_diag[0] = 3.0  # Weight for first joint in 2D case
         elif state_dim == 6:
             # Linearly decreasing weights from 2.0 to 1.0
             Q_diag = np.linspace(5.0, 1.0, 6)
@@ -28,6 +29,7 @@ class ClfCbfDrccpController:
         
         self.prev_u = None
         self.solve_fail = False
+        
         
         # Setup the optimization solver
         self.setup_solver()
@@ -45,6 +47,7 @@ class ClfCbfDrccpController:
         h_samples = ca.SX.sym('h', self.num_samples)
         h_grads = ca.SX.sym('h_grad', self.num_samples, self.state_dim)
         dh_dt = ca.SX.sym('dh_dt', self.num_samples)
+        u_nominal = ca.SX.sym('u_nominal', self.state_dim)  # Add u_nominal as parameter
         
         # CLF computation
         error = current_config - reference_config
@@ -59,9 +62,9 @@ class ClfCbfDrccpController:
         ubg = []
         
         # CLF constraint
-        g.append(dV + self.clf_rate * V - delta)
-        lbg.append(-ca.inf)
-        ubg.append(0)
+        # g.append(dV + self.clf_rate * V - delta)
+        # lbg.append(-ca.inf)
+        # ubg.append(0)
         
         
         # Following Proposition 1 in the theory:
@@ -117,7 +120,7 @@ class ClfCbfDrccpController:
         ubg.extend([self.control_limits] * self.state_dim)
         
         # Objective function
-        obj = (self.p1 * ca.sumsqr(u) + 
+        obj = (self.p1 * ca.sumsqr(u - u_nominal) +  # Use u_nominal parameter instead of self.u_nominal
                self.p2 * delta**2)
         
         
@@ -137,7 +140,7 @@ class ClfCbfDrccpController:
             nlp = {
                 'x': ca.vertcat(u, delta, s, beta),
                 'p': ca.vertcat(current_config, reference_config, h_samples, 
-                               h_grads.reshape((-1, 1)), dh_dt),
+                               h_grads.reshape((-1, 1)), dh_dt, u_nominal),  # Add u_nominal to parameters
                 'f': obj,
                 'g': ca.vertcat(*g)
             }
@@ -155,7 +158,7 @@ class ClfCbfDrccpController:
         self.x0 = np.zeros(self.state_dim + 1 + 1 + self.num_samples)  # [u, delta, s, beta]
         
     def generate_controller(self, current_config, reference_config, 
-                          h_samples, h_grad_samples, dh_dt_samples):
+                          h_samples, h_grad_samples, dh_dt_samples, u_nominal):
         try:
             # Pack parameters
             p = np.concatenate([
@@ -163,7 +166,8 @@ class ClfCbfDrccpController:
                 reference_config,
                 h_samples,
                 h_grad_samples.flatten(),
-                dh_dt_samples
+                dh_dt_samples,
+                u_nominal  # Add u_nominal to parameters
             ])
             
             # Initial guess should match the number of decision variables

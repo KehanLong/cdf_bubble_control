@@ -44,21 +44,24 @@ class XArmController:
             self.pd_controller = PDController(kp=0.8, kd=0.1, control_limits=self.max_velocity)
 
         elif control_type == 'clf_cbf':
+            self.pd_controller = PDController(kp=0.8, kd=0.1, control_limits=self.max_velocity)
             self.clf_cbf_controller = ClfCbfQpController(
             p1=1e0,    # Control effort penalty
-            p2=1e2,    # CLF slack variable penalty
+            p2=1e0,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=self.cbf_rate,
-            safety_margin=0.2
+            safety_margin=0.1
             )
         # Add DR-CLF-CBF controller
         elif control_type == 'clf_dro_cbf':
+
+            self.pd_controller = PDController(kp=0.9, kd=0.1, control_limits=self.max_velocity)
             self.clf_dro_cbf_controller = ClfCbfDrccpController(
             p1=1e0,    # Control effort penalty
             p2=1e0,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=self.cbf_rate,
-            wasserstein_r=0.01,
+            wasserstein_r=0.018,
             epsilon=0.1,
             num_samples=self.num_samples,  # Number of CBF samples to use
             state_dim=6,                #xArm6
@@ -75,7 +78,7 @@ class XArmController:
                 target_joints,
                 current_vel
             )
-            print('PD velocity_cmd', velocity_cmd)
+            # print('PD velocity_cmd', velocity_cmd)
             
         elif self.control_type == 'clf_cbf':
             # Ensure we need gradients
@@ -123,11 +126,11 @@ class XArmController:
             h = h_values[0, min_idx] 
             
             # Print which type of obstacle is active
-            if min_idx < static_points.shape[0]:
-                print(f"Static obstacle active - h value: {h.item():.3f}")
-            else:
-                dyn_idx = min_idx - static_points.shape[0]
-                print(f"Dynamic obstacle {dyn_idx} active - h value: {h.item():.3f}")
+            # if min_idx < static_points.shape[0]:
+            #     print(f"Static obstacle active - h value: {h.item():.3f}")
+            # else:
+            #     dyn_idx = min_idx - static_points.shape[0]
+            #     print(f"Dynamic obstacle {dyn_idx} active - h value: {h.item():.3f}")
             
             # Compute final gradients for the minimum point
             h.backward(retain_graph=True)
@@ -147,14 +150,20 @@ class XArmController:
             
             dh_dt = torch.dot(dh_dp, dp_dt).item()
 
+            u_nominal = self.pd_controller.compute_control(
+                current_joints.detach().cpu().numpy(),
+                target_joints.detach().cpu().numpy(),
+                current_vel.detach().cpu().numpy()
+            )
+
             # Generate control input using CLF-CBF-QP
             velocity_cmd = self.clf_cbf_controller.generate_controller(
                 current_joints.detach().cpu().numpy(),
                 target_joints.cpu().numpy(),
                 h.item(),
                 dh_dtheta.cpu().numpy(),
-                #dh_dt 
-                0      # static env
+                dh_dt,
+                u_nominal
             )
             velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
@@ -178,12 +187,14 @@ class XArmController:
                 return_gradients=False
             )
             
-            print('min_h_values', h_values.min().item())
+            # print('min_h_values', h_values.min().item())
             
             # Create combined_h = h + dh/dt for ranking
             combined_h = h_values[0].detach().clone() * self.cbf_rate  # Detach to prevent gradient accumulation
             
             # Compute dh/dt for dynamic obstacles and add to combined_h
+
+            start_time = time.time()
             num_static = static_points.shape[0]
             for idx in range(num_static, all_points.shape[1]):
                 h_val = h_values[0, idx]  # Use original h_values
@@ -200,6 +211,8 @@ class XArmController:
                 
                 # Add dh/dt to combined_h
                 combined_h[idx] += dh_dt
+
+            # print('dh/dt time taken', time.time() - start_time)
             
             # Get the k smallest values based on combined_h
             k = self.num_samples
@@ -210,12 +223,12 @@ class XArmController:
             static_active = sum(1 for idx in top_k_indices if idx < num_static)
             dynamic_active = sum(1 for idx in top_k_indices if idx >= num_static)
             
-            print(f"Active obstacles in top {k} samples:")
-            if static_active > 0:
-                print(f"  - {static_active} static obstacles")
-            if dynamic_active > 0:
-                print(f"  - {dynamic_active} dynamic obstacles")
-            print(f"Minimum h value: {h_values[0, top_k_indices[0]].item():.3f}")
+            # print(f"Active obstacles in top {k} samples:")
+            # if static_active > 0:
+            #     print(f"  - {static_active} static obstacles")
+            # if dynamic_active > 0:
+            #     print(f"  - {dynamic_active} dynamic obstacles")
+            # print(f"Minimum h value: {h_values[0, top_k_indices[0]].item():.3f}")
             
             # Now compute gradients and collect samples for selected points
             h_grads = []
@@ -253,6 +266,12 @@ class XArmController:
             h_samples_np = np.array(h_samples)
             h_grads_np = np.stack(h_grads)
             dh_dt_samples_np = np.array(dh_dt_samples)
+
+            u_nominal = self.pd_controller.compute_control(
+                current_joints.detach().cpu().numpy(),
+                target_joints.detach().cpu().numpy(),
+                current_vel.detach().cpu().numpy()
+            )
             
             # Generate control input using DR-CLF-CBF-QP with correct dh_dt values
             velocity_cmd = self.clf_dro_cbf_controller.generate_controller(
@@ -260,7 +279,8 @@ class XArmController:
                 target_joints.cpu().numpy(),
                 h_samples_np,
                 h_grads_np,
-                dh_dt_samples_np  # Now using correct dh_dt values
+                dh_dt_samples_np,  # Now using correct dh_dt values
+                u_nominal
             )
             velocity_cmd = torch.tensor(velocity_cmd, device=self.device)
         
@@ -279,7 +299,7 @@ class XArmController:
         return np.array(trajectory)[indices]
 
     def execute_trajectory(self, trajectory_data: dict, dt: float = 0.02, use_bezier: bool = True, 
-                          save_video: bool = False) -> Tuple[List[float], List[float]]:
+                          save_video: bool = False) -> Tuple[List[float], List[np.ndarray], bool]:
         """
         Execute trajectory using velocity control.
         
@@ -291,12 +311,22 @@ class XArmController:
             dt: Time step for control
             use_bezier: Whether to use Bezier curves (True) or discrete waypoints (False)
             save_video: Whether to save execution video (default: False)
+        
+        Returns:
+            Tuple containing:
+            - List of distances to goal
+            - List of executed joint configurations
+            - Boolean indicating if execution was safe (no collisions)
         """
         goal_distances = []
-        sdf_distances = []
-        frames = []  # Will remain empty if save_video is False
+        executed_configs = []
+        min_sdf_values = []
+        frames = []
         
-        # Add video parameters only if saving video
+        SAFETY_THRESHOLD = 0.03
+        JOINT_THRESHOLD = 0.05  # Maximum allowed joint difference for considering goal reached
+        is_safe = True
+        
         if save_video:
             width = 1920
             height = 1080
@@ -304,10 +334,15 @@ class XArmController:
             frame_interval = max(1, int((1/dt) / fps))
         
         step = 0
-        
         initial_state = self.planner.get_current_joint_states().cpu().numpy()
         
-        # Initialize appropriate governor based on mode
+        # Get the final planned configuration
+        if use_bezier and 'bezier_curves' in trajectory_data:
+            final_planned_config = trajectory_data['waypoints'][-1]
+        else:
+            final_planned_config = trajectory_data[-1]
+        
+        # Initialize appropriate governor
         if use_bezier and 'bezier_curves' in trajectory_data:
             print("Using Bezier-based reference governor")
             governor = BezierReferenceGovernor(
@@ -330,10 +365,29 @@ class XArmController:
         while True:
             # Get current joint states and velocities
             current_joints = self.planner.get_current_joint_states()
-            current_velocities = torch.tensor([
-                p.getJointState(self.robot_id, i+1)[1]
-                for i in range(6)
-            ], device=self.device)
+            # current_velocities = torch.tensor([
+            #     p.getJointState(self.robot_id, i+1)[1]
+            #     for i in range(6)
+            # ], device=self.device)
+
+            current_velocities = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], device=self.device)
+
+            executed_configs.append(current_joints.cpu().numpy())
+
+            # Check safety using robot SDF
+            points_robot = self.planner.points_robot.unsqueeze(0)  # Add batch dimension
+            sdf_values = self.planner.robot_sdf.query_sdf(
+                points=points_robot,
+                joint_angles=current_joints.unsqueeze(0),
+                return_gradients=False
+            )
+            min_sdf = sdf_values.min().item()
+            min_sdf_values.append(min_sdf)
+            
+            # Update safety flag
+            if min_sdf < SAFETY_THRESHOLD:
+                is_safe = False
+                print(f"Warning: Safety violation detected! Min SDF: {min_sdf:.4f}")
 
             # Get reference based on governor type
             if use_bezier and 'bezier_curves' in trajectory_data:
@@ -360,38 +414,48 @@ class XArmController:
                     force=100
                 )
 
-            # Step simulation multiple times per control step
-            for _ in range(int(dt / (1/200.0))):  # Add this loop
-                self.env.step()  # This will update obstacle positions
+            # Step simulation
+            for _ in range(int(dt / (1/200.0))):
+                self.env.step()
 
             # Record metrics
             current_ee_pos = self.planner.get_ee_position(current_joints)
             goal_dist = torch.norm(self.planner.goal - current_ee_pos.squeeze())
             goal_distances.append(goal_dist.item())
 
-            # Capture frame only if video saving is enabled
+            # Capture frame if video saving is enabled
             if save_video and step % frame_interval == 0:
                 frames.append(self.planner._capture_frame(step, 1000, width, height))
             step += 1
-            
-            # Break if we're close to the end of the trajectory
-            if s > 0.995 and goal_dist < 0.03:
-                print("Goal reached!")
-                time.sleep(20.0)
+
+            current_config = current_joints.detach().cpu().numpy()
+            joint_differences = np.abs(current_config - final_planned_config)
+            max_joint_diff = np.max(joint_differences)
+
+            print('max_joint_diff', max_joint_diff)
+
+            # Check if we're close to the end of the trajectory
+            if s > 0.99 and max_joint_diff < JOINT_THRESHOLD:
+                print("Goal reached successfully!")
+                break
+
+            if step > 600:
+                print("Trajectory completed but goal not reached!")
                 break
 
             time.sleep(dt)
 
-        # Save video only if enabled
         if save_video and frames:
             print("Saving execution video...")
             imageio.mimsave(f'execution_{self.control_type}.mp4', frames, fps=fps)
 
-        return goal_distances, sdf_distances
+        return goal_distances, np.array(executed_configs), is_safe
 
 if __name__ == "__main__":
     # Example usage
-    goal_pos = torch.tensor([0.7, 0.15, 0.66], device='cuda')
+    goal_pos = torch.tensor([0.78, 0.24, 0.37], device='cuda')
+
+    # example pos: [0.7, 0.1, 0.66], [0.25, 0.6, 0.6], [0.22, 0.27, 0.66]
     planner_type = 'bubble'  # or other types
 
     trajectory_whole = None
@@ -415,7 +479,7 @@ if __name__ == "__main__":
     if trajectory_whole is None:
         print("Planning new trajectory...")
         planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble', 
-                                       seed=42, use_pybullet_inverse=True, early_termination=False)  
+                                       seed=10, use_pybullet_inverse=True, early_termination=False)  
         trajectory_whole = planner.run_demo(execute_trajectory=False)
 
         planner.env.close()
@@ -430,15 +494,15 @@ if __name__ == "__main__":
     if trajectory_whole is not None:
         try:
             # Initialize controller 
-            planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
+            planner = XArmSDFVisualizer(goal_pos, use_gui=False, planner_type=planner_type, dynamic_obstacles=True)
             controller = XArmController(planner, control_type='clf_dro_cbf')
             
             if planner_type == 'bubble':
                 print(f"Original trajectory length: {len(trajectory_whole['waypoints'])}")
-                distances = controller.execute_trajectory(trajectory_whole, use_bezier=True, save_video=False)
+                distances, executed_configs, is_safe = controller.execute_trajectory(trajectory_whole, use_bezier=True, save_video=True)
             else:
                 print(f"Original trajectory length: {len(trajectory_whole)}")
-                distances = controller.execute_trajectory(trajectory_whole)
+                distances, executed_configs, is_safe = controller.execute_trajectory(trajectory_whole)
         finally:
             # Ensure proper cleanup of the controller's planner
             if 'controller' in locals() and hasattr(controller, 'planner'):

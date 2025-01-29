@@ -81,7 +81,7 @@ def run_benchmark(num_trials: int = 10) -> Dict:
                 result,
                 initial_config,
                 dt=0.02,
-                duration=25.0,
+                duration=50.0,
                 control_type=control_type,
                 use_bezier=True,
                 dynamic_obstacles_exist=True
@@ -89,13 +89,12 @@ def run_benchmark(num_trials: int = 10) -> Dict:
             
             if is_safe:
                 results[control_type]['success_rate'] += 1
-            
-            # Compute tracking error (Frechet distance)
-            tracking_error = compute_frechet_distance(tracked_configs, reference_configs)
-            results[control_type]['tracking_errors'].append(tracking_error)
+                # Only compute tracking error for successful trajectories
+                tracking_error = compute_frechet_distance(tracked_configs, reference_configs)
+                results[control_type]['tracking_errors'].append(tracking_error)
+                print(f"Tracking error: {tracking_error:.4f}")
             
             print(f"Safe trajectory: {is_safe}")
-            print(f"Tracking error: {tracking_error:.4f}")
     
     # Compute final statistics
     for control_type in results:
@@ -132,8 +131,8 @@ if __name__ == "__main__":
     results = run_benchmark(num_trials=20)
     
     # Save results
-    output_file = os.path.join(results_dir, 'control_benchmark_results.json')
-    save_results(results, output_file)
+    # output_file = os.path.join(results_dir, 'control_benchmark_results.json')
+    # save_results(results, output_file)
     
     # Print summary
     print("\nBenchmark Results:")
@@ -143,4 +142,3 @@ if __name__ == "__main__":
         print(f"Success Rate: {metrics['success_rate']*100:.1f}%")
         print(f"Mean Tracking Error: {metrics['mean_tracking_error']:.4f} ± {metrics['std_tracking_error']:.4f}")
     
-    print(f"\nDetailed results saved to: {output_file}") 

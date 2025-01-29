@@ -7,21 +7,28 @@ import numpy as np
 project_root = Path(__file__).parent
 sys.path.append(str(project_root))
 
-from cdf_training.network import CDFNetwork
+from cdf_training.network import CDFNetwork, CDFNetworkWithDropout
 
 class RobotCDF:
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cuda', use_dropout=True):
         self.device = device
         
         # Load trained CDF model
-        self.model = self._load_cdf_model()
+        self.model = self._load_cdf_model(use_dropout)
         
-    def _load_cdf_model(self):
+    def _load_cdf_model(self, use_dropout=True):
         """Load trained CDF model"""
         model_dir = project_root / "trained_models"
-        model_path = model_dir / "best_model_gelu.pth"
+        #model_path = model_dir / "best_model_gelu.pth"
+
+        if use_dropout:
+        # dropout model
+            model_path = model_dir / "dropout_0.1_best_model_gelu.pth"
+            model = CDFNetworkWithDropout(input_dims=8, output_dims=1, activation='gelu', dropout_rate=0.1).to(self.device)
+        else:
+            model_path = model_dir / "best_model_gelu.pth"
+            model = CDFNetwork(input_dims=8, output_dims=1, activation='gelu').to(self.device)
         
-        model = CDFNetwork(input_dims=8, output_dims=1, activation='gelu').to(self.device)
         model.load_state_dict(torch.load(model_path))
         model.eval()
         
@@ -101,6 +108,60 @@ class RobotCDF:
         
         return cdf_values
 
+    def query_cdf_dropout(self, points, joint_angles, num_samples=10, return_gradients=False):
+        """
+        Query CDF with Monte Carlo Dropout for uncertainty estimation
+        Args:
+            points: [B, N, 2] tensor of 2D points
+            joint_angles: [B, 2] tensor of joint angles
+            num_samples: int, number of forward passes for MC dropout
+            return_gradients: bool, whether to return gradients w.r.t. joint angles
+        Returns:
+            all_cdf_values: [num_samples, B, N] tensor of all CDF values
+            all_gradients: [num_samples, B, N, 2] tensor of all gradients (optional)
+        """
+        # Explicitly enable dropout
+        self.model.train()  # Enable dropout
+        torch.set_grad_enabled(True)
+        
+        points = points.to(dtype=torch.float32, device=self.device)
+        joint_angles = joint_angles.to(dtype=torch.float32, device=self.device)
+        
+        B = joint_angles.shape[0]
+        N = points.shape[1]
+        
+        # Store multiple predictions
+        all_cdf_values = []
+        all_gradients = [] if return_gradients else None
+        
+        for _ in range(num_samples):
+            if return_gradients:
+                # Create a new copy of joint_angles for each forward pass
+                joint_angles_copy = joint_angles.detach().clone()
+                joint_angles_copy.requires_grad_(True)
+                
+                cdf, grad = self.query_cdf(points, joint_angles_copy, return_gradients=True)
+                all_cdf_values.append(cdf)
+                all_gradients.append(grad)
+            else:
+                with torch.no_grad():
+                    cdf = self.query_cdf(points, joint_angles, return_gradients=False)
+                    all_cdf_values.append(cdf)
+        
+        # Stack the values
+        all_cdf_values = torch.stack(all_cdf_values, dim=0)  # [num_samples, B, N]
+        
+        if return_gradients:
+            all_gradients = torch.stack(all_gradients, dim=0)  # [num_samples, B, N, 2]
+            
+            # Set model back to eval mode after we're done
+            self.model.eval()
+            return all_cdf_values, all_gradients
+        
+        # Set model back to eval mode after we're done
+        self.model.eval()
+        return all_cdf_values
+
     def test_differentiability(self):
         """Test if the model is differentiable and check eikonal constraint"""
         # Create test inputs
@@ -129,7 +190,8 @@ class RobotCDF:
 
 if __name__ == "__main__":
     device = 'cuda'
-    robot_cdf = RobotCDF(device)
+    robot_cdf_regular = RobotCDF(device=device, use_dropout=False)
+    robot_cdf_dropout = RobotCDF(device=device, use_dropout=True)
     
     # Test points (2D)
     test_points = torch.tensor([
@@ -141,27 +203,21 @@ if __name__ == "__main__":
     # Test joint angles (2D)
     joint_angles = torch.tensor([[0.0, 0.0]], device=device)
     
-    print("\nTesting CDF query...")
-    print(f"Test points shape: {test_points.shape}")
-    print(f"Joint angles shape: {joint_angles.shape}")
+    print("\nTesting regular CDF query...")
+    regular_cdf = robot_cdf_regular.query_cdf(test_points, joint_angles)
     
-    # Query CDF values and gradients
-    cdf_values, gradients = robot_cdf.query_cdf(test_points, joint_angles, return_gradients=True)
+    print("\nTesting CDF query with dropout...")
+    all_cdf_values, all_gradients = robot_cdf_dropout.query_cdf_dropout(
+        test_points, 
+        joint_angles, 
+        num_samples=10,
+        return_gradients=True
+    )
     
-    print("\nResults:")
+    print("\nResults comparison:")
     for i in range(len(test_points[0])):
         print(f"\nPoint {test_points[0,i].cpu().numpy()}:")
-        print(f"CDF value: {cdf_values[0,i].item():.6f}")
-        print(f"Gradients: {gradients[0,i].detach().cpu().numpy()}")
+        print(f"Regular model CDF value: {regular_cdf[0,i].item():.6f}")
+        print(f"Dropout model values: {all_cdf_values[:,0,i].detach().cpu().numpy()}")
+        print(f"Dropout mean ± std: {all_cdf_values[:,0,i].mean().item():.6f} ± {all_cdf_values[:,0,i].std().item():.6f}")
     
-    # Test differentiability
-    robot_cdf.test_differentiability()
-    
-    # Add eikonal constraint visualization for test points
-    print("\nEikonal Constraint at Test Points:")
-    gradient_norms = torch.norm(gradients, dim=-1)
-    for i in range(len(test_points[0])):
-        print(f"\nPoint {test_points[0,i].cpu().numpy()}:")
-        print(f"CDF value: {cdf_values[0,i].item():.6f}")
-        print(f"Gradient norm: {gradient_norms[0,i].item():.6f} (should be close to 1.0)")
-        print(f"Gradients: {gradients[0,i].detach().cpu().numpy()}") 

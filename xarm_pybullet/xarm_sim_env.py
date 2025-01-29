@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import List, Dict
 import matplotlib.pyplot as plt
 import imageio
+import cv2
 
 
 @dataclass
@@ -78,13 +79,22 @@ class XArmEnvironment:
 
     def add_default_objects(self):
         """Add default obstacles to the environment"""
-        # Load bookshelf
+        # Load bookshelf (env1)
+        # bookshelf_id = p.loadURDF(os.path.join(self.script_dir,
+        #     "obst_urdf/bookshelf.urdf"),
+        #     basePosition=[0.05, 0.25, 0.625],
+        #     baseOrientation=p.getQuaternionFromEuler([0, 0, np.pi]),
+        #     globalScaling=0.4
+        # )
+
+        # Load bookshelf (env2)
         bookshelf_id = p.loadURDF(os.path.join(self.script_dir,
             "obst_urdf/bookshelf.urdf"),
-            basePosition=[0.05, 0.25, 0.625],
-            baseOrientation=p.getQuaternionFromEuler([0, 0, np.pi]),
+            basePosition=[0.25, 0.0, 0.625],
+            baseOrientation=p.getQuaternionFromEuler([0, 0, np.pi/2]),
             globalScaling=0.4
         )
+
         self.objects.append(bookshelf_id)
 
     def add_obstacle(self, urdf_path, position, orientation=None, scaling=1.0):
@@ -116,14 +126,28 @@ class XArmEnvironment:
             baseVisualShapeIndex=visual_shape_id,
             basePosition=[0.1, -0.1, 1.1],
         )
-        
+
+        # env1
+
+        # self.dynamic_obstacles.append({
+        #     'id': obstacle_id,
+        #     'type': 'vertical',
+        #     'center': [0.0, -0.3, 1.1],  # Middle position
+        #     'amplitude': 0.4,  # +/- 0.4m from center
+        #     'speed': 0.2,      # Constant speed in m/s
+        #     'direction': 1,    # 1 for up, -1 for down
+        #     'current_pos': [0.1, -0.1, 1.1],
+        # })
+
+        # env2
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'vertical',
-            'center': [0.0, -0.3, 1.1],  # Middle position
-            'amplitude': 0.4,  # +/- 0.3m from center
-            'frequency': 0.2,  # Oscillation frequency
-            'phase': 0.0,      # Time tracking
+            'center': [0.0, 0.5, 1.2],  # Middle position
+            'amplitude': 0.5,  # +/- 0.4m from center
+            'speed': 0.2,      # Constant speed in m/s
+            'direction': 1,    # 1 for up, -1 for down
+            'current_pos': [0.1, 0.3, 1.1],
         })
         
         # Horizontal moving obstacle
@@ -134,19 +158,31 @@ class XArmEnvironment:
         )
         
         obstacle_id = p.createMultiBody(
-            baseMass=0,  # Mass of 0 makes it kinematic
-            #baseCollisionShapeIndex=collision_shape_id,
+            baseMass=0,
             baseVisualShapeIndex=visual_shape_id,
-            basePosition=[0.0, 0.1, 1.2],  # Start at middle of horizontal path
+            basePosition=[0.0, 0.1, 1.2],
         )
-        
+
+        # env1
+        # self.dynamic_obstacles.append({
+        #     'id': obstacle_id,
+        #     'type': 'horizontal',
+        #     'center': [0.3, 0.1, 1.2],
+        #     'amplitude': 0.4,  # +/- 0.4m from center
+        #     'speed': 0.25,      # Constant speed in m/s
+        #     'direction': 1,    # 1 for right, -1 for left
+        #     'current_pos': [0.3, 0.1, 1.2],
+        # })
+
+        # env2 
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'horizontal',
-            'center': [0.0, 0.1, 1.2],  # Fixed y and z
-            'amplitude': 0.3,  # +/- 0.3m in x direction
-            'frequency': 0.05,  # Oscillation frequency
-            'phase': 0.0,      # Time tracking
+            'center': [0.0, 0.1, 0.9],
+            'amplitude': 0.5,  # +/- 0.4m from center
+            'speed': 0.25,      # Constant speed in m/s
+            'direction': 1,    # 1 for right, -1 for left
+            'current_pos': [0.0, 0.1, 0.9],
         })
         
         # Figure-8 moving obstacle
@@ -161,8 +197,7 @@ class XArmEnvironment:
         z = 0.8
         
         obstacle_id = p.createMultiBody(
-            baseMass=0,  # Mass of 0 makes it kinematic
-            #baseCollisionShapeIndex=collision_shape_id,
+            baseMass=0,
             baseVisualShapeIndex=visual_shape_id,
             basePosition=[x, y, z],
         )
@@ -172,54 +207,69 @@ class XArmEnvironment:
             'type': 'figure8',
             'center': [x, y, z],
             'amplitude': 0.2,
-            'frequency': 0.3,
+            'speed': 0.3,      # Constant speed in m/s
             'phase': 0.0,
+            'current_pos': [x, y, z],
         })
 
     def update_dynamic_obstacles(self, dt):
         """Update positions of dynamic obstacles"""
         for obstacle in self.dynamic_obstacles:
+            current_pos = np.array(obstacle['current_pos'])
+            
             if obstacle['type'] == 'vertical':
-                # Update phase
-                obstacle['phase'] += dt * obstacle['frequency']
+                # Update position
+                new_z = current_pos[2] + obstacle['direction'] * obstacle['speed'] * dt
                 
-                # Vertical sinusoidal motion
-                new_z = obstacle['center'][2] + obstacle['amplitude'] * np.sin(2 * np.pi * obstacle['phase'])
+                # Check if we need to change direction
+                if abs(new_z - obstacle['center'][2]) > obstacle['amplitude']:
+                    obstacle['direction'] *= -1
+                    new_z = current_pos[2] + obstacle['direction'] * obstacle['speed'] * dt
+                
                 new_pos = [
                     obstacle['center'][0],
                     obstacle['center'][1],
                     new_z
                 ]
-                
-                # Set vertical velocity
-                vz = obstacle['amplitude'] * 2 * np.pi * obstacle['frequency'] * np.cos(2 * np.pi * obstacle['phase'])
-                velocity = [0, 0, vz]
+                velocity = [0, 0, obstacle['speed'] * obstacle['direction']]
                 
             elif obstacle['type'] == 'horizontal':
-                # Update phase
-                obstacle['phase'] += dt * obstacle['frequency']
+                # Update position
+                # new_x = current_pos[0] + obstacle['direction'] * obstacle['speed'] * dt
                 
-                # Horizontal sinusoidal motion
-                new_x = obstacle['center'][0] + obstacle['amplitude'] * np.sin(2 * np.pi * obstacle['phase'])
+                # Check if we need to change direction
+                # if abs(new_x - obstacle['center'][0]) > obstacle['amplitude']:
+                #     obstacle['direction'] *= -1
+                #     new_x = current_pos[0] + obstacle['direction'] * obstacle['speed'] * dt
+                
+                # new_pos = [
+                #     new_x,
+                #     obstacle['center'][1],
+                #     obstacle['center'][2]
+                # ]
+                new_y = current_pos[1] + obstacle['direction'] * obstacle['speed'] * dt
+                if abs(new_y - obstacle['center'][1]) > obstacle['amplitude']:
+                    obstacle['direction'] *= -1
+                    new_y = current_pos[1] + obstacle['direction'] * obstacle['speed'] * dt
+                
                 new_pos = [
-                    new_x,
-                    obstacle['center'][1],
+                    obstacle['center'][0],
+                    new_y,
                     obstacle['center'][2]
                 ]
-                
-                # Set horizontal velocity
-                vx = obstacle['amplitude'] * 2 * np.pi * obstacle['frequency'] * np.cos(2 * np.pi * obstacle['phase'])
-                velocity = [vx, 0, 0]
+                velocity = [obstacle['speed'] * obstacle['direction'], 0, 0]
                 
             elif obstacle['type'] == 'figure8':
-                # Update phase
-                obstacle['phase'] += dt * obstacle['frequency']
+                # Update phase based on constant speed
+                # The figure-8 path length is approximately 4 * amplitude
+                path_length = 4 * obstacle['amplitude']
+                angular_speed = obstacle['speed'] / path_length
+                obstacle['phase'] += angular_speed * dt
                 
                 # Figure-8 pattern (lemniscate of Bernoulli)
-                a = obstacle['amplitude']
                 t = 2 * np.pi * obstacle['phase']
+                a = obstacle['amplitude']
                 
-                # Figure-8 coordinates relative to center
                 dx = a * np.cos(t) / (1 + np.sin(t)**2)
                 dy = a * np.sin(t) * np.cos(t) / (1 + np.sin(t)**2)
                 
@@ -229,12 +279,12 @@ class XArmEnvironment:
                     obstacle['center'][2]
                 ]
                 
-                # Calculate velocities (derivatives of position)
+                # Calculate velocities for figure-8
                 vx = -a * (2 * np.sin(t)**3 - np.sin(t)) / (1 + np.sin(t)**2)**2
                 vy = a * np.cos(t) * (2 * np.sin(t)**2 - 1) / (1 + np.sin(t)**2)**2
                 velocity = [
-                    vx * 2 * np.pi * obstacle['frequency'],
-                    vy * 2 * np.pi * obstacle['frequency'],
+                    vx * angular_speed * 2 * np.pi,
+                    vy * angular_speed * 2 * np.pi,
                     0
                 ]
             
@@ -250,6 +300,9 @@ class XArmEnvironment:
                 linearVelocity=velocity,
                 angularVelocity=[0, 0, 0]
             )
+            
+            # Update current position
+            obstacle['current_pos'] = new_pos
 
     def get_static_point_cloud(self, width=320, height=240, downsample=True, min_height=0.6):
         """Get filtered point cloud of static environment (cached)"""
@@ -717,21 +770,98 @@ class XArmEnvironment:
         
         return img
 
-    def record_trajectory_video(self, trajectory, fps=30, width=1920, height=1080, planner_type=""):
-        """Record a video of the trajectory execution"""
+    def preview_camera_view(self, camera_params=None):
+        """Interactive preview of camera view before recording"""
+        if camera_params is None:
+            camera_params = {
+                'target': [0.0, 0.0, 1.5],
+                'distance': 1.6,
+                'yaw': 50,
+                'pitch': -15,
+                'roll': 0
+            }
+        
+        print("\nCamera Preview Mode:")
+        print("Use these keys to adjust the view:")
+        print("W/S: Adjust pitch")
+        print("A/D: Adjust yaw")
+        print("Q/E: Adjust distance")
+        print("Arrow keys: Adjust target position")
+        print("R: Reset to default view")
+        print("Enter: Accept current view")
+        print("Esc: Exit preview")
+        
+        while True:
+            # Capture and display current view
+            frame = self.capture_snapshot(camera_params, width=1280, height=720)
+            
+            # Display current camera parameters
+            print("\rCurrent params:", camera_params, end='', flush=True)
+            
+            # Display frame
+            cv2.imshow('Camera Preview', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            key = cv2.waitKey(1) & 0xFF
+            
+            # Handle keyboard input
+            if key == ord('w'):
+                camera_params['pitch'] = min(camera_params['pitch'] + 5, 89)
+            elif key == ord('s'):
+                camera_params['pitch'] = max(camera_params['pitch'] - 5, -89)
+            elif key == ord('a'):
+                camera_params['yaw'] = (camera_params['yaw'] - 5) % 360
+            elif key == ord('d'):
+                camera_params['yaw'] = (camera_params['yaw'] + 5) % 360
+            elif key == ord('q'):
+                camera_params['distance'] = max(camera_params['distance'] - 0.1, 0.1)
+            elif key == ord('e'):
+                camera_params['distance'] += 0.1
+            elif key == ord('r'):
+                camera_params = {
+                    'target': [0.0, 0.0, 1.5],
+                    'distance': 1.6,
+                    'yaw': 45,
+                    'pitch': -30,
+                    'roll': 0
+                }
+            elif key == 13:  # Enter key
+                cv2.destroyAllWindows()
+                return camera_params
+            elif key == 27:  # Esc key
+                cv2.destroyAllWindows()
+                return None
+
+    def record_trajectory_video(self, trajectory, fps=30, width=1920, height=1080, planner_type="", preview_camera=True):
+        """Record a video of the trajectory execution with optional camera preview"""
         output_dir = "results/videos"
         os.makedirs(output_dir, exist_ok=True)
         
         filename = os.path.join(output_dir, f'trajectory_{planner_type}.mp4')
         
-        # Setup camera parameters
+        # Default camera parameters (env1)
+        # camera_params = {
+        #     'target': [0.0, 0.0, 1.5],
+        #     'distance': 1.7,
+        #     'yaw': 55,
+        #     'pitch': -10,
+        #     'roll': 0
+        # }
+
+        # Default camera parameters (env2)
         camera_params = {
             'target': [0.0, 0.0, 1.5],
-            'distance': 2.5,
-            'yaw': 45,  # Angled view
-            'pitch': -30,
+            'distance': 2.1,
+            'yaw': -40,
+            'pitch': -15,
             'roll': 0
         }
+        
+        # Preview and adjust camera if requested
+        # if preview_camera:
+        #     print("\nPreviewing camera view before recording...")
+        #     new_params = self.preview_camera_view(camera_params)
+        #     if new_params is not None:
+        #         camera_params = new_params
+        #     print("\nUsing camera parameters:", camera_params)
         
         frames = []
         print("\nRecording trajectory video...")
@@ -825,50 +955,90 @@ class XArmEnvironment:
 
 def main():
     """Demo script showing environment usage with IK"""
-    env = XArmEnvironment(gui=True, add_dynamic_obstacles=False)
+    env = XArmEnvironment(gui=True, add_dynamic_obstacles=True)
+
+    try:
+        print("Starting 10-second simulation...")
+        start_time = time.time()
+        sim_duration = 10  # seconds
+        dt = 1/240.0  # PyBullet's default timestep
+        
+        while time.time() - start_time < sim_duration:
+            # Update dynamic obstacles
+            env.update_dynamic_obstacles(dt)
+            
+            # Step the simulation
+            env.step()
+            
+            # Optional: add small delay to make motion visible in real-time
+            time.sleep(dt)
+            
+        print("Simulation completed!")
+        
+    finally:
+        env.close()
+
+    # try:
+    #     # Your trajectory generation code here...
+    #     # For testing, let's create a simple trajectory
+    #     trajectory = [env.initial_joint_positions] * 30  # Just hold initial position
+        
+    #     # Record video with camera preview
+    #     env.record_trajectory_video(
+    #         trajectory=trajectory,
+    #         fps=30,
+    #         width=1920,
+    #         height=1080,
+    #         planner_type="test",
+    #         preview_camera=True  # This will open the preview window
+    #     )
+    
+    # finally:
+    #     env.close()
+
 
     # print(env.print_robot_info())
     
-    try:
-        # Set IK parameters
-        env.set_ik_parameters(
-            max_iterations=2000,
-            threshold=0.05,
-            max_solutions=5
-        )
+    # try:
+    #     # Set IK parameters
+    #     env.set_ik_parameters(
+    #         max_iterations=2000,
+    #         threshold=0.05,
+    #         max_solutions=5
+    #     )
         
-        # Test different target positions (in robot base frame)
-        test_positions = [
-            torch.tensor([0.1, -0.5, 0.7], device='cuda'),   # Front right
-            torch.tensor([0.7, 0.2, 0.6], device='cuda'),   # Front right
-            torch.tensor([0.2, 0.6, 0.7], device='cuda'),   # Front left
-            torch.tensor([0.4, 0.0, 1.0], device='cuda'),   # High center
-        ]
+    #     # Test different target positions (in robot base frame)
+    #     test_positions = [
+    #         torch.tensor([0.1, -0.5, 0.7], device='cuda'),   # Front right
+    #         torch.tensor([0.7, 0.2, 0.6], device='cuda'),   # Front right
+    #         torch.tensor([0.2, 0.6, 0.7], device='cuda'),   # Front left
+    #         torch.tensor([0.4, 0.0, 1.0], device='cuda'),   # High center
+    #     ]
         
-        for target_pos in test_positions:
-            print(f"\nTesting target position (robot base frame): {target_pos}")
+    #     for target_pos in test_positions:
+    #         print(f"\nTesting target position (robot base frame): {target_pos}")
             
-            # Create goal marker (needs world frame)
-            env.create_goal_marker(target_pos + torch.tensor(env.robot_base_pos, device='cuda'))
+    #         # Create goal marker (needs world frame)
+    #         env.create_goal_marker(target_pos + torch.tensor(env.robot_base_pos, device='cuda'))
             
-            # Find and visualize solutions (pass in robot base frame)
-            solutions = env.find_ik_solutions(
-                target_pos=target_pos,  # Keep in robot base frame
-                visualize=True,
-                pause_time=1.0, 
-                seed=42
-            )
+    #         # Find and visualize solutions (pass in robot base frame)
+    #         solutions = env.find_ik_solutions(
+    #             target_pos=target_pos,  # Keep in robot base frame
+    #             visualize=True,
+    #             pause_time=1.0, 
+    #             seed=42
+    #         )
             
-            print(f"Found {len(solutions)} valid solutions")
-            time.sleep(2)
+    #         print(f"Found {len(solutions)} valid solutions")
+    #         time.sleep(2)
             
-            # Step simulation to show movement
-            for _ in range(100):
-                env.step()
-                time.sleep(0.01)
+    #         # Step simulation to show movement
+    #         for _ in range(100):
+    #             env.step()
+    #             time.sleep(0.01)
     
-    finally:
-        env.close()
+    # finally:
+    #     env.close()
 
 if __name__ == "__main__":
     main()

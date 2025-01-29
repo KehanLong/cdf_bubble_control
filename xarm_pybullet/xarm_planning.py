@@ -250,8 +250,8 @@ class XArmSDFVisualizer:
         print(f"\nSearching for goal configurations:")
         print(f"Using random seed: {self.seed}")
 
-        debug_config = np.array([-1.417, -0.232, -0.40, 0.0, 0.632, -1.417], dtype=np.float32)
-        return [debug_config]
+        # debug_config = np.array([-1.417, -0.232, -0.40, 0.0, 0.632, -1.417], dtype=np.float32)
+        # return [debug_config]
         
         if self.use_pybullet_inverse:
             # Use environment's IK solver
@@ -310,14 +310,35 @@ class XArmSDFVisualizer:
     
     def _capture_frame(self, step: int, time_steps: int, width: int, height: int) -> np.ndarray:
         """Capture a frame using a rotating camera"""
+
+        # env1 camera parameters
         view_matrix = p.computeViewMatrixFromYawPitchRoll(
             cameraTargetPosition=[0.0, 0.0, 1.5],
-            distance=2.5,
-            yaw=0,  # Rotating camera, -(step / time_steps) * 60 for rotate to left
-            pitch=-30,
+            distance=1.7,
+            yaw=55,  # Rotating camera, -(step / time_steps) * 60 for rotate to left
+            pitch=-10,
             roll=0,
             upAxisIndex=2
         )
+
+        # env 2 camera parameters
+        view_matrix = p.computeViewMatrixFromYawPitchRoll(
+            cameraTargetPosition=[0.0, 0.0, 1.5],
+            distance=2.1,
+            yaw=-40,  # Rotating camera, -(step / time_steps) * 60 for rotate to left
+            pitch=-15,
+            roll=0,
+            upAxisIndex=2
+        )
+
+
+        #         camera_params = {
+        #     'target': [0.0, 0.0, 1.5],
+        #     'distance': 2.1,
+        #     'yaw': -55,
+        #     'pitch': -15,
+        #     'roll': 0
+        # }
         
         proj_matrix = p.computeProjectionMatrixFOV(
             fov=60,
@@ -485,11 +506,13 @@ class XArmSDFVisualizer:
 
 if __name__ == "__main__":
     # Example usage for comparison
-    goal_pos = torch.tensor([0.7, 0.15, 0.66], device='cuda')     
+    goal_pos = torch.tensor([0.78, 0.24, 0.37], device='cuda')     
 
-    # example goal pos: [0.7, 0.1, 0.6],  [0.2, 0.6, 0.6] , [0.22, 0.27, 0.66]   
+    # env1 example goal pos: [0.7, 0.1, 0.6],  [0.2, 0.6, 0.6] , [0.22, 0.27, 0.66]   
+    # env2 example goal pos: [0.78, 0.24, 0.37]
 
-    seed = 42
+
+    seed = 10
     visualizer = None
 
     try:
@@ -510,7 +533,7 @@ if __name__ == "__main__":
         visualizer.run_demo(
             fps=20,
             execute_trajectory=True,
-            save_snapshots=False
+            save_snapshots=True
         )
     
     finally:

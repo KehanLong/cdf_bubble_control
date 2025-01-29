@@ -106,28 +106,31 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
     
     # Initialize appropriate controller based on type
     if control_type == 'pd':
-        controller = PDController(kp=1.0, kd=0.1, control_limits=2.0)
+        controller = PDController(kp=1.0, kd=0.2, control_limits=2.0)
     elif control_type == 'clf_cbf':
+
+        pd_controller = PDController(kp=1.0, kd=0.2, control_limits=2.0)
         controller = ClfCbfQpController(
             p1=1.0,    
-            p2=1e2,    # Increased penalty on CLF slack
+            p2=1e1,    # Increased penalty on CLF slack
             clf_rate=1.0,  # Increased CLF convergence rate
             cbf_rate=1.0,
-            safety_margin=0.1,
+            safety_margin=0.2,
             state_dim=2,
             control_limits=2.0
         )
     elif control_type == 'clf_dro_cbf':
+        pd_controller = PDController(kp=1.0, kd=0.2, control_limits=2.0)
         controller = ClfCbfDrccpController(
             p1=1.0, 
-            p2=1e2, 
+            p2=1e1, 
             clf_rate=1.0, 
             cbf_rate=1.0, 
-            wasserstein_r=0.01, 
+            wasserstein_r=0.015, 
             epsilon=0.1, 
-            num_samples=5,
+            num_samples=10,
             state_dim=2,
-            control_limits=2.0
+            control_limits=5.0,
         )
     
     # Initialize appropriate governor based on mode
@@ -138,7 +141,7 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
             trajectory_data=trajectory_data,
             dt=dt,
             k=0.2,  # Slower progression
-            zeta=10   # Smoother progression
+            zeta=8   # Smoother progression
         )
     else:
         print("Using discrete waypoint-based reference governor")
@@ -207,6 +210,14 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
                 joint_angles=config_tensor,
                 return_gradients=False
             )
+
+            u_nominal = pd_controller.compute_control(
+                current_config,
+                reference_config,
+                current_vel
+            )
+
+            # print(f"u_nominal: {u_nominal}")
             
             if control_type == 'clf_cbf':
                 # Get minimum CDF value and its gradient
@@ -239,7 +250,8 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
                     reference_config,
                     h,
                     dh_dtheta,
-                    dh_dt
+                    dh_dt,
+                    u_nominal
                 )
             else:  # clf_dro_cbf
                 # Get k smallest CDF values
@@ -278,7 +290,8 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
                     reference_config,
                     h_values.detach().cpu().numpy(),
                     np.stack(h_grads),
-                    np.array(dh_dt_values)
+                    np.array(dh_dt_values),
+                    u_nominal
                 )
         
         # Proper dynamics integration
@@ -308,11 +321,14 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
             print(f"Collision detected at time {time:.2f}s")
             break
         
-        # Break if we're close to the end AND tracking error is small
+        # Break if we're close to the end AND tracking error relative to goal is small
+        goal_config = trajectory_data['waypoints'][-1]  # Final configuration from planned path
         tracking_error = np.linalg.norm(current_config - reference_config)
-        if s > 0.99 and tracking_error < 0.05:
+        goal_error = np.linalg.norm(current_config - goal_config)
+        if s > 0.995 and goal_error < 0.05:
             print(f"\nReached goal at time {time:.1f}s")
             print(f"Final tracking error: {tracking_error:.3f}")
+            print(f"Final goal error: {goal_error:.3f}")
             break
     
     if time >= duration:
@@ -369,6 +385,9 @@ if __name__ == "__main__":
     if result is None:
         print("Planning failed! Exiting...")
         sys.exit(1)
+
+    # simulate with dynamic obstacles
+    use_dynamic_obstacles = True
     
     # Execute control
     tracked_configs, reference_configs, tracked_vels, reference_vels, is_safe = track_planned_path(
@@ -376,10 +395,10 @@ if __name__ == "__main__":
         result, 
         initial_config,
         dt=0.02, 
-        duration=25.0,
+        duration=40.0,
         control_type='clf_dro_cbf',                # clf_cbf, clf_dro_cbf, pd
         use_bezier=True,
-        dynamic_obstacles_exist=True
+        dynamic_obstacles_exist=use_dynamic_obstacles
     )
     # snapshot_dir = os.path.join(src_dir, 'figures', 'control_snapshots')
     # save_control_snapshots(obstacles, tracked_configs, reference_configs, dt=0.02, 
@@ -388,4 +407,4 @@ if __name__ == "__main__":
     print(f"Is safe: {is_safe}")
     
     # Create animation
-    animate_path(obstacles, tracked_configs, reference_configs, dt=0.02, dynamic_obstacles=True)
+    animate_path(obstacles, tracked_configs, reference_configs, dt=0.02, dynamic_obstacles=use_dynamic_obstacles)

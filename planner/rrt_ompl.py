@@ -107,9 +107,9 @@ class OMPLRRTPlanner:
         if planner_type == 'cdf_rrt':
             self.safety_margin = 0.05        # consistent with bubble planner
         elif planner_type == 'sdf_rrt':
-            self.safety_margin = 0.02        # safety margin
+            self.safety_margin = 0.03        # safety margin
         else:
-            self.safety_margin = 0.02
+            self.safety_margin = 0.03
         # Set random seed if provided
         if seed is not None:
             print(f"Setting RRT random seed: {seed}")

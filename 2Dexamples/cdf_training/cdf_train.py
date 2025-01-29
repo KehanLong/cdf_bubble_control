@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from cdf_computation import CDFDataProcessor
-from network import CDFNetwork
+from network import CDFNetwork, CDFNetworkWithDropout
 from losses import compute_total_loss_with_gradients
 
 def set_random_seed(seed=42):
@@ -31,7 +31,9 @@ def train_cdf_network(
     device='cuda',
     loss_threshold=0.001,
     activation='relu',
-    pretrained_model=None
+    pretrained_model=None,
+    dropout_rate=0.1,
+    use_dropout=False
 ):
     # Convert paths to absolute paths
     contact_db_path = Path(contact_db_path)
@@ -53,15 +55,30 @@ def train_cdf_network(
     processor = CDFDataProcessor(contact_db_path, device=device, batch_x=batch_x, batch_q=batch_q)
     
     # Initialize model and load pretrained weights if specified
-    model = CDFNetwork(input_dims=8, output_dims=1, activation=activation).to(device)  # 2D config + 2D point = 4D input
+    if use_dropout:
+        model = CDFNetworkWithDropout(
+            input_dims=8, 
+            output_dims=1, 
+            activation=activation,
+            dropout_rate=dropout_rate
+        ).to(device)
+        model_prefix = f'dropout_{dropout_rate}_'
+    else:
+        model = CDFNetwork(
+            input_dims=8, 
+            output_dims=1, 
+            activation=activation
+        ).to(device)
+        model_prefix = ''
+    
     if pretrained_model:
         print(f"Loading pretrained model from: {pretrained_model}")
         model.load_state_dict(torch.load(pretrained_model))
-        model_filename = f'best_model_{activation}_continued.pth'
-        final_model_filename = f'final_model_{activation}_continued.pth'
+        model_filename = f'{model_prefix}best_model_{activation}_continued.pth'
+        final_model_filename = f'{model_prefix}final_model_{activation}_continued.pth'
     else:
-        model_filename = f'best_model_{activation}.pth'
-        final_model_filename = f'final_model_{activation}.pth'
+        model_filename = f'{model_prefix}best_model_{activation}.pth'
+        final_model_filename = f'{model_prefix}final_model_{activation}.pth'
     
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -131,7 +148,7 @@ def train_cdf_network(
         
         # Periodic save every 10000 epochs
         if (epoch + 1) % 10000 == 0:
-            periodic_filename = f'model_{activation}_epoch_{epoch+1}.pth'
+            periodic_filename = f'{model_prefix}model_{activation}_epoch_{epoch+1}.pth'
             torch.save(model.state_dict(), model_save_dir / periodic_filename)
             print(f"Saved periodic model at epoch {epoch+1}")
         
@@ -165,5 +182,7 @@ if __name__ == "__main__":
         learning_rate=0.002,
         device='cuda',
         loss_threshold=1e-4,
-        activation='gelu'
+        activation='gelu',
+        use_dropout=True,
+        dropout_rate=0.1
     ) 

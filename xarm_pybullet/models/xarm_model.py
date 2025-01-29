@@ -106,3 +106,28 @@ class XArmFK:
             q <= self.joint_limits[:, 1]
         )
         return within_limits.all(dim=1)
+    
+
+
+def compute_joint_space_diagonal():
+    # Extract the joint limits from the code
+    joint_ranges = [
+        [(-2*pi),    (2*pi)],    # Joint 1: range of 4π
+        [-2.059,     2.059],     # Joint 2: range of 4.118
+        [-3.927,     0.191],     # Joint 3: range of 4.118
+        [-1.745,     3.927],     # Joint 4: range of 5.672
+        [-2.059,     2.059],     # Joint 5: range of 4.118
+        [-6.283,     6.283]      # Joint 6: range of 12.566
+    ]
+    
+    # Calculate the length of each dimension (upper - lower)
+    ranges = np.array([upper - lower for lower, upper in joint_ranges])
+    
+    # Compute diagonal length using Euclidean norm
+    diagonal_length = np.sqrt(np.sum(ranges**2))
+    
+    return diagonal_length
+
+if __name__ == "__main__":
+    diagonal = compute_joint_space_diagonal()
+    print(f"Joint space diagonal length: {diagonal:.3f} radians")
