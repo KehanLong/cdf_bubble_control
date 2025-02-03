@@ -143,11 +143,11 @@ class XArmEnvironment:
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'vertical',
-            'center': [0.0, 0.5, 1.2],  # Middle position
-            'amplitude': 0.5,  # +/- 0.4m from center
+            'center': [0.1, -0.2, 1.2],  # Middle position
+            'amplitude': 0.4,  # +/- 0.4m from center
             'speed': 0.2,      # Constant speed in m/s
-            'direction': 1,    # 1 for up, -1 for down
-            'current_pos': [0.1, 0.3, 1.1],
+            'direction': -1,    # 1 for up, -1 for down
+            'current_pos': [0.1, -0.2, 1.2],
         })
         
         # Horizontal moving obstacle
@@ -178,11 +178,11 @@ class XArmEnvironment:
         self.dynamic_obstacles.append({
             'id': obstacle_id,
             'type': 'horizontal',
-            'center': [0.0, 0.1, 0.9],
-            'amplitude': 0.5,  # +/- 0.4m from center
-            'speed': 0.25,      # Constant speed in m/s
+            'center': [0.0, -0.2, 1.0],
+            'amplitude': 0.4,  # +/- 0.4m from center
+            'speed': 0.2,      # Constant speed in m/s
             'direction': 1,    # 1 for right, -1 for left
-            'current_pos': [0.0, 0.1, 0.9],
+            'current_pos': [0.0, -0.2, 1.0],
         })
         
         # Figure-8 moving obstacle
@@ -192,7 +192,7 @@ class XArmEnvironment:
             rgbaColor=colors[2]  # Purple
         )
         
-        x = -0.1
+        x = -0.2
         y = -0.3
         z = 0.8
         

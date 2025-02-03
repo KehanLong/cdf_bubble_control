@@ -55,13 +55,13 @@ class XArmController:
         # Add DR-CLF-CBF controller
         elif control_type == 'clf_dro_cbf':
 
-            self.pd_controller = PDController(kp=0.9, kd=0.1, control_limits=self.max_velocity)
+            self.pd_controller = PDController(kp=0.7, kd=0.1, control_limits=self.max_velocity)
             self.clf_dro_cbf_controller = ClfCbfDrccpController(
             p1=1e0,    # Control effort penalty
             p2=1e0,    # CLF slack variable penalty
             clf_rate=1.0,
             cbf_rate=self.cbf_rate,
-            wasserstein_r=0.018,
+            wasserstein_r=0.025,
             epsilon=0.1,
             num_samples=self.num_samples,  # Number of CBF samples to use
             state_dim=6,                #xArm6
@@ -494,7 +494,7 @@ if __name__ == "__main__":
     if trajectory_whole is not None:
         try:
             # Initialize controller 
-            planner = XArmSDFVisualizer(goal_pos, use_gui=False, planner_type=planner_type, dynamic_obstacles=True)
+            planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
             controller = XArmController(planner, control_type='clf_dro_cbf')
             
             if planner_type == 'bubble':

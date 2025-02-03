@@ -160,11 +160,12 @@ class ClfCbfDrccpController:
     def generate_controller(self, current_config, reference_config, 
                           h_samples, h_grad_samples, dh_dt_samples, u_nominal):
         try:
+            slack = 0.05
             # Pack parameters
             p = np.concatenate([
                 current_config,
                 reference_config,
-                h_samples,
+                h_samples - slack,
                 h_grad_samples.flatten(),
                 dh_dt_samples,
                 u_nominal  # Add u_nominal to parameters
