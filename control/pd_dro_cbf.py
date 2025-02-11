@@ -1,10 +1,11 @@
 import numpy as np
 import casadi as ca
+import time
 
 class ClfCbfDrccpController:
     def __init__(self, p1=1e0, p2=1e3, clf_rate=1.0, cbf_rate=1.0, 
                  wasserstein_r=0.02, epsilon=0.1, num_samples=5,
-                 state_dim=6, control_limits=2.0, stability_threshold=0.1):
+                 state_dim=6, control_limits=2.0):
         # Control parameters
         self.p1 = p1  # Control effort penalty
         self.p2 = p2  # CLF slack variable penalty
@@ -15,17 +16,15 @@ class ClfCbfDrccpController:
         self.num_samples = num_samples
         self.state_dim = state_dim  # Number of joints/states (same as control dim for arm)
         self.control_limits = control_limits
-        self.stability_threshold = stability_threshold  # Threshold for CLF slack variable
-        self.unstable_flag = False  # Flag to indicate if control is unstable
         
         
         # Define Q matrix for CLF based on state dimension
         Q_diag = np.ones(state_dim)
         if state_dim == 2:
-            Q_diag[0] = 1.0  # Weight for first joint in 2D case
+            Q_diag[0] = 3.0  # Weight for first joint in 2D case
         elif state_dim == 6:
             # Linearly decreasing weights from 2.0 to 1.0
-            Q_diag = np.linspace(1.0, 1.0, 6)
+            Q_diag = np.linspace(5.0, 1.0, 6)
         self.Q = np.diag(Q_diag)
         
         self.prev_u = None
@@ -63,9 +62,9 @@ class ClfCbfDrccpController:
         ubg = []
         
         # CLF constraint
-        g.append(dV + self.clf_rate * V - delta)
-        lbg.append(-ca.inf)
-        ubg.append(0)
+        # g.append(dV + self.clf_rate * V - delta)
+        # lbg.append(-ca.inf)
+        # ubg.append(0)
         
         
         # Following Proposition 1 in the theory:
@@ -121,7 +120,7 @@ class ClfCbfDrccpController:
         ubg.extend([self.control_limits] * self.state_dim)
         
         # Objective function
-        obj = (self.p1 * ca.sumsqr(u) + 
+        obj = (self.p1 * ca.sumsqr(u - u_nominal) +  # Use u_nominal parameter instead of self.u_nominal
                self.p2 * delta**2)
         
         
@@ -185,17 +184,10 @@ class ClfCbfDrccpController:
             
             # Extract solution
             x_opt = sol['x'].full().flatten()
-            u_new = x_opt[:self.state_dim]  # Control inputs
-            delta = x_opt[self.state_dim]   # CLF slack variable
-            
-            # Check if delta is too large
-            self.unstable_flag = delta > self.stability_threshold
-            if self.unstable_flag:
-                print(f"Warning: Large CLF slack variable (delta = {delta:.3f})")
+            u_new = x_opt[:self.state_dim]  # First state_dim elements are the control inputs
             
             return u_new
             
         except Exception as e:
             print(f"[DR-CLF-CBF-QP] Solver failed: {str(e)}")
-            self.unstable_flag = True  # Set flag to True if solver fails
             return np.zeros(self.state_dim) 

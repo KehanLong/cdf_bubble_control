@@ -36,14 +36,16 @@ def concatenate_obstacle_list(obstacle_list):
 
 def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
                       max_bubble_samples=500, seed=42, early_termination=False, 
-                      planner_type='bubble', visualize=True):
+                      planner_type='bubble', visualize=True, safety_margin=0.1):
     """
     Plan and visualize a path using different planners
     
     Args:
         planner_type: str, one of ['bubble', 'bubble_connect', 'cdf_rrt', 'sdf_rrt']
+        safety_margin: float, safety margin for planning (default: 0.1)
     """
     print(f"\nStarting planning process with planner: {planner_type}...")
+    print(f"Using safety margin: {safety_margin}")
     
     # Set random seed for reproducibility
     joint_limits = (
@@ -61,38 +63,31 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
         planner = BubblePlanner(
             robot_cdf, joint_limits, max_samples=max_bubble_samples, batch_size=2,
             device=robot_cdf.device, seed=seed, planner_type=planner_type, 
-            early_termination=early_termination
+            early_termination=early_termination,
+            safety_margin=safety_margin  # Pass safety margin to bubble planner
         )
         result = planner.plan(initial_config, goal_configs, obstacle_points)
         
     elif planner_type in ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect', 'informed_rrt', 'bit_star', 'rrt_star', 'bit']:
         # Use OMPL RRT planner
-        # Choose which robot model to use for collision checking
-
         planner = OMPLRRTPlanner(
-            robot_sdf=robot_sdf,  # sdf model
-            robot_cdf=robot_cdf,  # cdf model
-            robot_fk=None,  # Not needed for 2D case
+            robot_sdf=robot_sdf,
+            robot_cdf=robot_cdf,
+            robot_fk=None,
             joint_limits=joint_limits,
             planner_type=planner_type,
             device=robot_cdf.device,
-            seed=seed
+            seed=seed,
+            safety_margin=safety_margin  # Pass safety margin to OMPL planner
         )
-
         
-        # Try each goal configuration until success or all failed
-        result = None
         result = planner.plan(
             start_config=initial_config,
             goal_configs=goal_configs,
             obstacle_points=obstacle_points,
             max_time=10.0,
             early_termination=early_termination
-            )
-        
-        if result is None or not result['metrics'].success:
-            print("Planning failed for all goal configurations!")
-            return None
+        )
     
     else:
         raise ValueError(f"Unknown planner type: {planner_type}")

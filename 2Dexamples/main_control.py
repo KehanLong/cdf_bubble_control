@@ -10,8 +10,8 @@ sys.path.append(str(project_root))
 src_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-from control.clf_cbf_qp import ClfCbfQpController
-from control.clf_dro_cbf import ClfCbfDrccpController
+from control.pd_cbf_qp import ClfCbfQpController
+from control.pd_dro_cbf import ClfCbfDrccpController
 from control.reference_governor import ReferenceGovernor
 from control.pd_control import PDController
 from control.reference_governor_bezier import BezierReferenceGovernor

@@ -73,7 +73,7 @@ def create_multigoal_sampler(mins, maxs, goal_configs, p0=0.2, rng=None):
     return sample_fn
 
 class BubblePlanner:
-    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, batch_size=50, device='cuda', seed=42, planner_type='bubble', early_termination=True):
+    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, batch_size=50, device='cuda', seed=42, planner_type='bubble', early_termination=True, safety_margin=0.1):
         """Initialize the bubble planner using CDF for collision checking"""
         self.random_seed = seed
         np.random.seed(seed)
@@ -86,6 +86,7 @@ class BubblePlanner:
         
         # Create local RNG
         self.rng = np.random.default_rng(seed)
+        self.safety_margin = safety_margin
         
         # Store robot info
         self.robot_cdf = robot_cdf
@@ -134,7 +135,7 @@ class BubblePlanner:
             return_gradients=False
         )
         
-        min_cdf = cdf_values.min().detach().cpu().numpy() 
+        min_cdf = cdf_values.min().detach().cpu().numpy() - self.safety_margin + 0.1
 
         # For 2d: 
         # min_cdf = max(cdf_values.min().detach().cpu().numpy() - 0.1, 0.05)
