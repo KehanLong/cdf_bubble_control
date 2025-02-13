@@ -267,8 +267,8 @@ class BubblePlanner:
         print("\nStarting bubble-based planning...")
         # print(f"Input shapes - Start: {start_config.shape}, Goals: {[g.shape for g in goal_configs]}, Obstacles: {obstacle_points.shape}")
         
-        start_time = time.time()
-        self.cdf_query_count = 0  # Reset counter
+        total_start_time = time.time()  # Move timer to start of everything
+        self.cdf_query_count = 0
         
         try:
             # goal_configs is a list containing a single list of configurations
@@ -378,14 +378,17 @@ class BubblePlanner:
                 
                 print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
                 
+                # Include all operations in total planning time
+                total_planning_time = time.time() - total_start_time
+                
                 metrics = PlanningMetrics(
                     success=True,
                     num_collision_checks=self.cdf_query_count,
                     path_length=np.sum([np.linalg.norm(trajectory[i+1] - trajectory[i]) 
                                       for i in range(len(trajectory)-1)]),
                     num_samples=len(overlaps_graph.vs),
-                    planning_time=time.time() - start_time,
-                    reached_goal_index=best_goal_index  # Include the reached goal index
+                    planning_time=total_planning_time,  # Use total time including CDF queries and optimization
+                    reached_goal_index=best_goal_index
                 )
                 
                 return {

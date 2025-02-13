@@ -46,27 +46,17 @@ class ValidityCheckerWrapper:
         # Reshape points to [1, N, 3] (batch size 1)
         points = self.points_robot.unsqueeze(0)  # Add batch dimension
         
-        # Debug prints
-        # print("\nDebug SDF Query:")
-        # print(f"Points shape: {points.shape}")
-        # print(f"Config shape: {config.shape}")
-        
         # Query SDF values
         sdf_values = self.robot_sdf.query_sdf(
             points=points,  # Shape: [1, N, 3]
             joint_angles=config  # Shape: [1, num_links]
         )
-
-        cdf_values = self.robot_cdf.query_cdf(
-            points=points,  # Shape: [1, N, 3]
-            joint_angles=config  # Shape: [1, num_links]
-        )
         
-        # Debug prints for SDF values
-        # print(f"SDF values shape: {sdf_values.shape}")
-        # print(f"SDF min value: {sdf_values.min().item():.6f}")
-        # print(f"SDF max value: {sdf_values.max().item():.6f}")
-        # print(f"SDF mean value: {sdf_values.mean().item():.6f}")
+        # if planner type is cdf_rrt, use cdf values
+        # cdf_values = self.robot_cdf.query_cdf(
+        #     points=points,  # Shape: [1, N, 3]
+        #     joint_angles=config  # Shape: [1, num_links]
+        # )
         
         is_valid = sdf_values.min().item() > self.safety_margin
         #print(f"Checking config {config.cpu().numpy()[0]}, valid: {is_valid}")
@@ -84,7 +74,8 @@ class OMPLRRTPlanner:
                  planner_type: str = 'sdf_rrt',
                  check_resolution: float = 0.01,
                  device: str = 'cuda',
-                 seed: int = None):
+                 seed: int = None,
+                 safety_margin: float = 0.05):
         """
         Initialize OMPL planner
         
@@ -104,12 +95,7 @@ class OMPLRRTPlanner:
         self.device = device
         self.dof = len(joint_limits[0])
 
-        if planner_type == 'cdf_rrt':
-            self.safety_margin = 0.05        # consistent with bubble planner
-        elif planner_type == 'sdf_rrt':
-            self.safety_margin = 0.03        # safety margin
-        else:
-            self.safety_margin = 0.03
+        self.safety_margin = safety_margin
         # Set random seed if provided
         if seed is not None:
             print(f"Setting RRT random seed: {seed}")
@@ -157,7 +143,7 @@ class OMPLRRTPlanner:
                                                        self.dof, self.safety_margin, self.device)
         self.si.setStateValidityChecker(ob.StateValidityCheckerFn(self.validity_checker))
           
-        # 0.01 for 2 joints, 0.001 for 6 joints
+        # 0.01 for 2 joints, 0.002 for 6 joints
         self.si.setStateValidityCheckingResolution(self.check_resolution)
         self.si.setup()
         
@@ -182,6 +168,9 @@ class OMPLRRTPlanner:
                 for j in range(self.dof):
                     goal[j] = float(goal_configs[goal_idx][j])
                 mg.addState(goal)
+            
+            mg.setThreshold(0.1)  # Allow solutions within this distance of goal
+            
             pdef.setGoal(mg)
             
             # Create and setup planner based on type
@@ -332,50 +321,3 @@ class OMPLRRTPlanner:
                     reached_goal_index=-1
                 )
             }
-
-def test_ompl_planner():
-    """Test function"""
-    import torch
-    # Add project root to Python path
-    import sys
-    from pathlib import Path
-    project_root = Path(__file__).parent.parent
-    sys.path.append(str(project_root))
-    from xarm_planning import XArmSDFVisualizer
-    
-    # Initialize visualizer with a dummy goal
-    goal_pos = torch.tensor([0.7, 0.2, 0.6], device='cuda')
-    visualizer = XArmSDFVisualizer(goal_pos, use_gui=False)
-    
-    # Create OMPL planner
-    planner = OMPLRRTPlanner(
-        robot_sdf=visualizer.robot_sdf,
-        robot_fk=visualizer.robot_fk,
-        joint_limits=(
-            visualizer.robot_fk.joint_limits[:, 0].cpu().numpy(),
-            visualizer.robot_fk.joint_limits[:, 1].cpu().numpy()
-        ),
-        planner_type='rrt'
-    )
-    
-    # Test planning
-    start_config = np.zeros(6)
-    goal_configs = [np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])]
-    
-    result = planner.plan(
-        start_config=start_config,
-        goal_configs=goal_configs,
-        obstacle_points=visualizer.points_robot
-    )
-    
-    if result['metrics'].success:
-        print("Planning succeeded!")
-        print(f"Path length: {result['metrics'].path_length:.3f}")
-        print(f"Collision checks: {result['metrics'].num_collision_checks}")
-        print(f"Number of samples: {result['metrics'].num_samples}")
-        print(f"Planning time: {result['metrics'].planning_time:.3f}s")
-    else:
-        print("Planning failed!")
-
-if __name__ == "__main__":
-    test_ompl_planner() 
