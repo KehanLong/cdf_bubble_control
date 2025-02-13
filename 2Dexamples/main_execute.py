@@ -31,8 +31,8 @@ def execute_planning_and_control(
     goal_threshold: float = 0.05,
     safety_threshold: float = 0.01,
     max_duration: float = 40.0,
-    initial_safety_margin: float = 0.1,  # Initial conservative margin
-    replan_safety_margin: float = 0.2    # More conservative margin for replanning
+    initial_safety_margin: float = 0.25,  # Initial conservative margin
+    replan_safety_margin: float = 0.25    # More conservative margin for replanning
 ) -> Dict[str, Any]:
     """
     Execute planning and control with continuous replanning based on controller feedback.
