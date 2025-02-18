@@ -164,7 +164,7 @@ def create_dynamic_obstacles(t: float, num_points: int = 50) -> Tuple[List[np.nd
     # First obstacle: moving horizontally
     start1 = (-4.5, 1.7)
     goal1 = (4.5, 1.7)
-    speed1 = 0.6  # m/s
+    speed1 = 0.4  # m/s
     distance1 = np.linalg.norm(np.array(start1) - np.array(goal1))  # Total distance between start and goal
     cycle_time1 = distance1 / speed1  # Time for one-way trip
     
@@ -214,7 +214,7 @@ def create_dynamic_obstacles(t: float, num_points: int = 50) -> Tuple[List[np.nd
     return obstacles, velocities
 
 def create_animation(obstacles: List[np.ndarray], tracked_configs, reference_configs, 
-                    dt: float = 0.02, src_dir=None, dynamic_obstacles: bool = False):
+                    dt: float = 0.02, src_dir=None, dynamic_obstacles: bool = False, goal_pos=None):
     """
     Create an animation of the robot arm tracking the planned path.
     
@@ -253,8 +253,15 @@ def create_animation(obstacles: List[np.ndarray], tracked_configs, reference_con
         plot_environment(obstacles, reference_configs[i], ax=ax, robot_color='green', 
                         plot_obstacles=False, label='Reference', robot_alpha=0.5)
         
-        ax.set_title(f'Time: {t:.2f}s')
-        ax.legend()
+        # Plot goal position if provided
+        if goal_pos is not None:
+            ax.plot(goal_pos[0], goal_pos[1], '*', color='red', markersize=15, label='Goal')
+            # Add a small circle around the goal to show the target region
+            #circle = plt.Circle((goal_pos[0], goal_pos[1]), 0.1, color='purple', fill=False, linestyle='--')
+            #ax.add_artist(circle)
+        
+        # ax.set_title(f'Time: {t:.2f}s')
+        ax.legend(fontsize=24)
         
         # Convert plot to RGB array
         fig.canvas.draw()

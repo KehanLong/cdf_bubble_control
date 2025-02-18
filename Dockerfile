@@ -12,6 +12,7 @@ RUN apt update && apt install -y --no-install-recommends \
     libeigen3-dev \
     libode-dev \
     lsb-release \
+    python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages
@@ -31,6 +32,7 @@ RUN pip3 install --no-cache-dir \
     scipy==1.14.1 \
     scikit-learn==1.5.2 \
     python-igraph==0.10.8 \
+    opencv-python==4.9.0.80 \
     --extra-index-url https://download.pytorch.org/whl/cu118
 
 # Install OMPL dependencies and build tools

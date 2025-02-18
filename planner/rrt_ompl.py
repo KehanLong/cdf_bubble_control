@@ -46,19 +46,19 @@ class ValidityCheckerWrapper:
         # Reshape points to [1, N, 3] (batch size 1)
         points = self.points_robot.unsqueeze(0)  # Add batch dimension
         
-        # Query SDF values
-        sdf_values = self.robot_sdf.query_sdf(
-            points=points,  # Shape: [1, N, 3]
-            joint_angles=config  # Shape: [1, num_links]
-        )
-        
-        # if planner type is cdf_rrt, use cdf values
-        # cdf_values = self.robot_cdf.query_cdf(
+        # Query SDF valuesm if use SDF field (generally slower due to kinematics chains)
+        # distance_values = self.robot_sdf.query_sdf(
         #     points=points,  # Shape: [1, N, 3]
         #     joint_angles=config  # Shape: [1, num_links]
         # )
         
-        is_valid = sdf_values.min().item() > self.safety_margin
+        # if planner type is cdf_rrt, use cdf values
+        distance_values = self.robot_cdf.query_cdf(
+            points=points,  # Shape: [1, N, 3]
+            joint_angles=config  # Shape: [1, num_links]
+        )
+        
+        is_valid = distance_values.min().item() > self.safety_margin
         #print(f"Checking config {config.cpu().numpy()[0]}, valid: {is_valid}")
         return is_valid
     

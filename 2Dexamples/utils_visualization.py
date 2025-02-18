@@ -4,6 +4,7 @@ import imageio
 import os
 from typing import List
 import torch
+from pathlib import Path
 
 from utils_env import plot_environment, create_dynamic_obstacles, forward_kinematics
 
@@ -350,19 +351,19 @@ def visualize_cdf_bubble_planning(robot_cdf, initial_config, goal_configs, traje
 
 def visualize_cdf_field(robot_cdf, obstacle_points, resolution=100):
     """
-    Visualize CDF field in configuration space (theta1-theta2)
-    
-    Args:
-        robot_cdf: RobotCDF instance
-        obstacle_points: numpy array of shape [N, 2] containing obstacle points
-        resolution: int, number of points in each dimension
+    Visualize CDF field in configuration space (theta1-theta2) with specific level sets
     """
     print("\nVisualizing CDF field...")
+    
+    # Create figures directory in the same folder as this script
+    script_dir = Path(__file__).parent
+    figures_dir = script_dir / 'figures'
+    figures_dir.mkdir(exist_ok=True)
     
     # Create a grid of configurations
     theta1 = np.linspace(-np.pi, np.pi, resolution)
     theta2 = np.linspace(-np.pi, np.pi, resolution)
-    T1, T2 = np.meshgrid(theta2, theta1)  # Swapped order to match visualization
+    T1, T2 = np.meshgrid(theta2, theta1)
     
     # Reshape obstacle points to match expected format [B, N, 2]
     obstacle_points = torch.tensor(obstacle_points, device=robot_cdf.device, dtype=torch.float32)
@@ -399,31 +400,47 @@ def visualize_cdf_field(robot_cdf, obstacle_points, resolution=100):
     # Create visualization
     fig, ax = plt.subplots(figsize=(10, 10))
     
-    # Plot CDF field without transpose
+    # Plot CDF field
     im = ax.imshow(cdf_values, extent=[-np.pi, np.pi, -np.pi, np.pi], 
                    origin='lower', cmap='viridis', aspect='equal')
-    cbar = plt.colorbar(im, ax=ax, label='CDF Value')
     
-    # Increase colorbar label size
-    cbar.ax.tick_params(labelsize=12)
-    cbar.set_label('CDF Value', size=14)
+    # Add specific level sets
+    levels = [0.2, 0.6, 1.0]
+    X, Y = np.meshgrid(np.linspace(-np.pi, np.pi, resolution),
+                      np.linspace(-np.pi, np.pi, resolution))
+    CS = ax.contour(X, Y, cdf_values, levels=levels, colors='white', alpha=0.7, linewidths=2)
+    ax.clabel(CS, inline=True, fontsize=16)  # Increased font size for contour labels
     
-    # Increase tick sizes
-    ax.tick_params(axis='both', which='major', labelsize=12)
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.ax.tick_params(labelsize=16)  # Increased colorbar tick font size
+    cbar.set_label('CDF Value', size=20)  # Increased colorbar label font size
     
-    ax.set_xlabel('θ₁', fontsize=14)
-    ax.set_ylabel('θ₂', fontsize=14)
-    ax.set_title('CDF Field in Configuration Space')
+    # Increase font sizes
+    ax.tick_params(axis='both', which='major', labelsize=16)  # Increased tick font size
+    ax.set_xlabel('θ₁', fontsize=20)
+    ax.set_ylabel('θ₂', fontsize=20)
+    ax.set_title('CDF Field', fontsize=24)
     
-    plt.show()
+    # Save with user ownership
+    save_path = figures_dir / 'cdf_field.png'
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    plt.close()
+    
+    # Ensure file is owned by current user
+    os.system(f"sudo chown $USER:$USER {save_path}")
     
     return cdf_values
 
 def visualize_sdf_field(robot_sdf, obstacle_points, resolution=100):
     """
-    Visualize SDF field in configuration space (theta1-theta2)
+    Visualize SDF field in configuration space (theta1-theta2) with specific level sets
     """
     print("\nVisualizing SDF field...")
+    
+    # Create figures directory in the same folder as this script
+    script_dir = Path(__file__).parent
+    figures_dir = script_dir / 'figures'
+    figures_dir.mkdir(exist_ok=True)
     
     # Create a grid of configurations
     theta1 = torch.linspace(-np.pi, np.pi, resolution)
@@ -470,15 +487,32 @@ def visualize_sdf_field(robot_sdf, obstacle_points, resolution=100):
     # Plot SDF field
     im = ax.imshow(sdf_field.T, extent=[-np.pi, np.pi, -np.pi, np.pi], 
                    origin='lower', cmap='RdBu', aspect='equal')
-    plt.colorbar(im, ax=ax, label='SDF Value')
     
-    ax.set_xlabel('θ₁', fontsize=14)
-    ax.set_ylabel('θ₂', fontsize=14)
-    ax.set_title('SDF Field in Configuration Space')
-
-    plt.show()
+    # Add specific level sets
+    levels = [0.2, 0.6, 1.0]
+    X, Y = np.meshgrid(np.linspace(-np.pi, np.pi, resolution),
+                      np.linspace(-np.pi, np.pi, resolution))
+    CS = ax.contour(X, Y, sdf_field.T, levels=levels, colors='black', alpha=0.7, linewidths=2)
+    ax.clabel(CS, inline=True, fontsize=16)  # Increased font size for contour labels
     
-        
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.ax.tick_params(labelsize=16)  # Increased colorbar tick font size
+    cbar.set_label('SDF Value', size=20)  # Increased colorbar label font size
+    
+    # Increase font sizes
+    ax.tick_params(axis='both', which='major', labelsize=16)  # Increased tick font size
+    ax.set_xlabel('θ₁', fontsize=20)
+    ax.set_ylabel('θ₂', fontsize=20)
+    ax.set_title('SDF Field', fontsize=24)
+    
+    # Save with user ownership
+    save_path = figures_dir / 'sdf_field.png'
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    plt.close()
+    
+    # Ensure file is owned by current user
+    os.system(f"sudo chown $USER:$USER {save_path}")
+    
     return sdf_field
 
 def visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_configs, trajectory, 
@@ -596,6 +630,62 @@ def visualize_ompl_rrt_planning(robot_cdf, robot_sdf, initial_config, goal_confi
                 bbox_inches='tight', dpi=300)
     plt.close()
 
+def visualize_workspace(obstacles, initial_config=None, save=True, resolution=100):
+    """
+    Visualize and save the workspace with obstacles and robot arm
+    Args:
+        obstacles: List of obstacle point clouds
+        initial_config: Initial configuration of the robot arm (optional)
+        save: Whether to save the plot
+        resolution: Resolution for plotting
+    """
+    print("\nVisualizing workspace...")
+    
+    # Create figures directory in the same folder as this script
+    script_dir = Path(__file__).parent
+    figures_dir = script_dir / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    
+    # Create visualization
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # Plot obstacles
+    for obstacle in obstacles:
+        ax.fill(obstacle[:, 0], obstacle[:, 1], alpha=0.5)
+        ax.scatter(obstacle[:, 0], obstacle[:, 1], color='red', s=1, alpha=0.8)
+    
+    # Plot robot arm if configuration is provided
+    if initial_config is not None:
+        plot_environment(obstacles, initial_config, ax=ax, 
+                        plot_obstacles=False,  # Obstacles already plotted
+                        robot_color='blue',
+                        highlight_joints=True,
+                        label='Robot')
+    
+    # Set axis properties
+    ax.set_xlim(-6, 6)
+    ax.set_ylim(-6, 6)
+    ax.set_aspect('equal')
+    
+    # Increase font sizes
+    ax.tick_params(axis='both', which='major', labelsize=16)
+    ax.set_xlabel('X', fontsize=20)
+    ax.set_ylabel('Y', fontsize=20)
+    ax.set_title('Workspace', fontsize=24)
+    
+    # Add grid
+    ax.grid(True, linestyle='--', alpha=0.3)
+    
+    if save:
+        save_path = figures_dir / 'workspace.png'
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        os.system(f"sudo chown $USER:$USER {save_path}")
+        plt.close()
+    else:
+        plt.show()
+    
+    return fig, ax
+
 if __name__ == "__main__":
     # Example usage
     from robot_cdf import RobotCDF
@@ -622,11 +712,11 @@ if __name__ == "__main__":
     obstacles = create_obstacles(rng=rng)
     obstacle_points = np.concatenate(obstacles, axis=0)
     
-    # Visualize CDF field
-    cdf_values = visualize_cdf_field(robot_cdf, obstacle_points, resolution=100)
+    # Create initial configuration
+    initial_config = np.array([0.0, 0.0])  # Example configuration
     
-    # Visualize SDF field
-    sdf_field = visualize_sdf_field(robot_sdf, obstacle_points, resolution=100)
+    # Visualize workspace with robot arm
+    visualize_workspace(obstacles, initial_config=initial_config, save=True, resolution=100)
 
 
 

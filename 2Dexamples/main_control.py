@@ -118,17 +118,17 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
             control_limits=2.0
         )
     elif control_type == 'clf_dro_cbf':
-        pd_controller = PDController(kp=1.0, kd=0.2, control_limits=2.0)
+        pd_controller = PDController(kp=0.8, kd=0.2, control_limits=2.0)
         controller = ClfCbfDrccpController(
             p1=1.0, 
             p2=1e1, 
             clf_rate=1.0, 
             cbf_rate=1.0, 
-            wasserstein_r=0.015, 
+            wasserstein_r=0.016, 
             epsilon=0.1, 
             num_samples=10,
             state_dim=2,
-            control_limits=5.0,
+            control_limits=2.0,
         )
     
     # Initialize appropriate governor based on mode
@@ -336,15 +336,17 @@ def track_planned_path(obstacles, trajectory_data, initial_config, dt=0.02, dura
     
     return np.array(tracked_configs), np.array(reference_configs), np.array(tracked_vels), np.array(reference_vels), is_safe
 
-def animate_path(obstacles: List[np.ndarray], tracked_configs, reference_configs, dt: float = 0.02, dynamic_obstacles=True):
+def animate_path(obstacles: List[np.ndarray], tracked_configs, reference_configs, 
+                dt: float = 0.02, dynamic_obstacles=True, goal_pos=None):
     """Create an animation of the robot arm tracking the planned path."""
-    return create_animation(obstacles, tracked_configs, reference_configs, dt, src_dir, dynamic_obstacles=dynamic_obstacles)
+    return create_animation(obstacles, tracked_configs, reference_configs, dt, src_dir, 
+                          dynamic_obstacles=dynamic_obstacles, goal_pos=goal_pos)
 
 if __name__ == "__main__":
     # Setup for planning
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    seed = 3
+    seed = 5
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -377,7 +379,7 @@ if __name__ == "__main__":
     result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
             max_bubble_samples=100, seed=seed, early_termination=False, 
-            planner_type=planner
+            planner_type=planner, safety_margin=0.25
         )
     
     if result is None:
@@ -405,4 +407,5 @@ if __name__ == "__main__":
     print(f"Is safe: {is_safe}")
     
     # Create animation
-    animate_path(obstacles, tracked_configs, reference_configs, dt=0.02, dynamic_obstacles=use_dynamic_obstacles)
+    animate_path(obstacles, tracked_configs, reference_configs, dt=0.02, 
+                dynamic_obstacles=use_dynamic_obstacles, goal_pos=goal_pos)

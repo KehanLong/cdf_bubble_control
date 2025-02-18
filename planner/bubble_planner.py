@@ -370,7 +370,14 @@ class BubblePlanner:
                 
                 cost = bezier_cost_all(bps, weights=[0.1])     # weights=[0.1] for minimizing path length, [1.0, 0.1] for smoother
                 prob = cvxpy.Problem(cvxpy.Minimize(cost), constr_bps)
+                
+                # Print problem details
+                print(f"Number of variables: {sum(v.size for v in prob.variables())}")
+                print(f"Number of constraints: {len(prob.constraints)}")
+                
+                solve_start = time.time()
                 prob.solve()
+                print(f"CVXPY post optimization Solve time: {time.time() - solve_start:.3f}s")
                 
                 # Generate final trajectory
                 times = np.linspace(0, 1.0, 50)

@@ -188,7 +188,7 @@ if __name__ == "__main__":
         result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
             max_bubble_samples=150, seed=seed, early_termination=True, 
-            planner_type=planner, visualize=True, use_profile=False
+            planner_type=planner, visualize=False, use_profile=True
         )
 
 
