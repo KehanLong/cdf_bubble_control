@@ -364,6 +364,78 @@ def compare_computation_efficiency(model_path, device='cuda', num_trials=100):
     
     return results
 
+def visualize_cdf_slice(device='cuda'):
+    """Visualize a single slice of training data showing a robot config, point, and contact configs"""
+    # Initialize robot and data processor
+    robot = Robot2D(device=device)
+    src_dir = Path(__file__).parent
+    contact_db_path = src_dir / "data" / "contact_db_2d_refined.npy"
+    processor = CDFDataProcessor(contact_db_path, device=device)
+    
+    # Sample a random point and its contact configs
+    point_idx = torch.randint(0, len(processor.valid_points), (1,)).item()
+    point = processor.valid_points[point_idx]
+    contact_configs = torch.tensor(processor.contact_configs[point_idx], device=device)
+    if contact_configs.dim() == 1:
+        contact_configs = contact_configs.reshape(-1, 2)
+    
+    # Randomly select 30 contact configs if we have more than that
+    if len(contact_configs) > 30:
+        indices = torch.randperm(len(contact_configs))[:30]
+        contact_configs = contact_configs[indices]
+    
+    # Sample a test configuration
+    test_config = processor.sample_q(batch_q=1)[0]
+    
+    # Compute CDF values for the point with respect to all contact configs
+    distances = torch.norm(contact_configs - test_config.unsqueeze(0), dim=1)
+    closest_idx = torch.argmin(distances)
+    closest_config = contact_configs[closest_idx]
+    
+    # Create visualization with larger figure size
+    plt.figure(figsize=(12, 12))
+    
+    # Plot contact configurations in light gray
+    # Plot first contact config with label, rest without to avoid duplicate legends
+    joints = robot.forward_kinematics(contact_configs[0].unsqueeze(0))[0]
+    joints = joints.cpu().numpy()
+    plt.plot(joints[:, 0], joints[:, 1], 'lightgray', alpha=0.3, linewidth=2, label='Contact Configs')
+    
+    # Plot remaining contact configs
+    for config in contact_configs[1:]:
+        joints = robot.forward_kinematics(config.unsqueeze(0))[0]
+        joints = joints.cpu().numpy()
+        plt.plot(joints[:, 0], joints[:, 1], 'gray', alpha=0.6, linewidth=2)
+    
+    # Plot the test configuration in blue
+    test_joints = robot.forward_kinematics(test_config.unsqueeze(0))[0]
+    test_joints = test_joints.detach().cpu().numpy()
+    plt.plot(test_joints[:, 0], test_joints[:, 1], 'b-', linewidth=3, label='Test Config')
+    plt.scatter(test_joints[:, 0], test_joints[:, 1], c='blue', s=100)
+    
+    # Plot the closest configuration in red
+    closest_joints = robot.forward_kinematics(closest_config.unsqueeze(0))[0]
+    closest_joints = closest_joints.detach().cpu().numpy()
+    plt.plot(closest_joints[:, 0], closest_joints[:, 1], 'r-', linewidth=3, label='Closest Contact Config')
+    plt.scatter(closest_joints[:, 0], closest_joints[:, 1], c='red', s=100)
+    
+    # Plot the query point as a purple star
+    point = point.detach().cpu().numpy()
+    plt.plot(point[0], point[1], '*', color='purple', markersize=20, label='Query Point')
+    
+    plt.title(f'Neural CDF Training Data', fontsize=22)
+    plt.xlabel('X', fontsize=20)
+    plt.ylabel('Y', fontsize=20)
+    plt.axis('equal')
+    plt.grid(True)
+    
+    # Increase legend and tick size
+    plt.legend(fontsize=22)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    plt.savefig('cdf_slice_visualization.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
 if __name__ == "__main__":
     src_dir = project_root
     
@@ -375,5 +447,8 @@ if __name__ == "__main__":
     # efficiency_results = compare_computation_efficiency(model_path=model_path)
     
     # Run other evaluations
-    metrics = evaluate_quantitative()
-    visualize_test_cases() 
+    # metrics = evaluate_quantitative()
+    # visualize_test_cases()
+    
+    # Add this line to run the new visualization
+    visualize_cdf_slice() 

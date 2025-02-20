@@ -72,7 +72,7 @@ class XArmSDFVisualizer:
             ee_goal: End-effector goal position
             use_gui: Whether to use GUI visualization
             initial_horizon: Initial horizon for MPPI
-            planner_type: Type of planner to use ('bubble_cdf', 'cdf_rrt', 'sdf_rrt', 'mppi')
+            planner_type: Type of planner to use ('bubble', 'cdf_rrt', 'sdf_rrt', 'mppi')
             seed: Random seed for reproducibility
         """
         # Set random seeds first

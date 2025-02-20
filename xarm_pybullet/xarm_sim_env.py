@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import List, Dict
 import matplotlib.pyplot as plt
 import imageio
-import cv2
+# import cv2
 
 
 @dataclass
