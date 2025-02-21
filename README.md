@@ -46,7 +46,7 @@ conda activate arm_cdf_planning
 
 You will additionally need to install OMPL depedencies: https://ompl.kavrakilab.org/installation.html
 
-## 2D Examples
+## 2D 2-link Planar Robot
 
 ### Neural CDF Training
 
@@ -76,6 +76,9 @@ To run the DRO-CBF control, run the following command:
 ```bash
 python 2Dexamples/main_control.py
 ```
+
+## Pybullet (xArm6) 
+
 
 
 
