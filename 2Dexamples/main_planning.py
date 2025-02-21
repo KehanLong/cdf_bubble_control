@@ -178,7 +178,7 @@ if __name__ == "__main__":
     goal_configs = inverse_kinematics_analytical(goal_pos[0], goal_pos[1])
 
     # Test different planners with profiling
-    planners_to_test = ['bubble', 'lazy_rrt']  # Add any planners you want to compare
+    planners_to_test = ['bubble']  # Add any planners you want to compare
     
     for planner in planners_to_test:
         print(f"\n{'='*50}")

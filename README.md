@@ -1,4 +1,4 @@
-Neural Configuration-Space Barriers for Manipulation Planning and Control [[Paper]](https://arxiv.org/abs/2409.13865)
+Neural Configuration-Space Barriers for Manipulation Planning and Control [[Paper]](https://arxiv.org/)
 ===========================================
 
 
@@ -44,26 +44,43 @@ conda create -n environment.yaml
 conda activate arm_cdf_planning
 ```
 
-You can install miniconda from [here](https://docs.conda.io/en/latest/miniconda.html).
+You will additionally need to install OMPL depedencies: https://ompl.kavrakilab.org/installation.html
 
 ## 2D Examples
-Run the file: 
+
+### Neural CDF Training
+
+Default training dataset is saved in `2Dexamples/cdf_training/data/`. To train the neural CDF:
+```bash
+python 2Dexamples/cdf_training/cdf_train.py
+```
+
+The default trained model is saved in `2Dexamples/trained_models/`.
+
+### Bubble-CDF Planning
+
+To run the bubble-CDF planning, run the following command:
 ```bash
 python 2Dexamples/main_planning.py
 ```
 
-#### 🧠 Neural Truncated CDF Training
-*   Default training dataset is saved in training_data/
-
-To train the neural T-CDF, run the file:
+Baseline Comparison:
+To compare with baselines using OMPL's planners, run the following command:
 ```bash
-python main_cdf.py
+python 2Dexamples/planning_benchmark.py
 ```
-The training parameters can be adjusted in training/config_3D.py. 
+
+### DRO-CBF Control
+
+To run the DRO-CBF control, run the following command:
+```bash
+python 2Dexamples/main_control.py
+```
 
 
 
-#### 🤖 Safe Bubble Planning
+
+
 
 
 
