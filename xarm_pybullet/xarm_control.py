@@ -432,7 +432,7 @@ class XArmController:
             joint_differences = np.abs(current_config - final_planned_config)
             max_joint_diff = np.max(joint_differences)
 
-            print('max_joint_diff', max_joint_diff)
+            # print('max_joint_diff', max_joint_diff)
 
             # Check if we're close to the end of the trajectory
             if s > 0.99 and max_joint_diff < JOINT_THRESHOLD:

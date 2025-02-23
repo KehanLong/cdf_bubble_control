@@ -49,16 +49,13 @@ You will additionally need to install OMPL depedencies: https://ompl.kavrakilab.
 ## 2D 2-link Planar Robot
 
 ### Neural CDF Training
-
 Default training dataset is saved in `2Dexamples/cdf_training/data/`. To train the neural CDF:
 ```bash
 python 2Dexamples/cdf_training/cdf_train.py
 ```
-
 The default trained model is saved in `2Dexamples/trained_models/`.
 
 ### Bubble-CDF Planning
-
 To run the bubble-CDF planning, run the following command:
 ```bash
 python 2Dexamples/main_planning.py
@@ -71,14 +68,32 @@ python 2Dexamples/planning_benchmark.py
 ```
 
 ### DRO-CBF Control
-
 To run the DRO-CBF control, run the following command:
 ```bash
 python 2Dexamples/main_control.py
 ```
 
-## Pybullet (xArm6) 
+## PyBullet (xArm6)
 
+### Neural SDF/CDF Training
+
+The default trained SDF/CDF models are saved in `xarm_pybullet/trained_models/`.
+
+### Bubble-CDF Planning
+To run the bubble-CDF planning in PyBullet, run:
+```bash
+python xarm_pybullet/xarm_planning.py
+```
+
+You can also specify the other planners to compare with, you can also change the goal position in the script.
+
+### DRO-CBF Control
+To run the DRO-CBF control with dynamic obstacles, run:
+```bash
+python xarm_pybullet/xarm_control.py
+```
+
+Some baseline controllers are also implemented in `xarm_pybullet/xarm_control.py`, you can try them out by changing the `control_type` parameter.
 
 
 
