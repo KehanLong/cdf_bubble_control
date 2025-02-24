@@ -44,7 +44,7 @@ conda create -n environment.yaml
 conda activate arm_cdf_planning
 ```
 
-You will additionally need to install OMPL depedencies: https://ompl.kavrakilab.org/installation.html
+If using conda environment, you will additionally need to install OMPL depedencies: https://ompl.kavrakilab.org/installation.html
 
 ## 2D 2-link Planar Robot
 
