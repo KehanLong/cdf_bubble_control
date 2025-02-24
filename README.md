@@ -41,7 +41,7 @@ This will start an interactive shell in the container. You can then run the exam
 If you prefer using conda, you can set up the environment:
 ```bash
 conda create -n environment.yaml
-conda activate arm_cdf_planning
+conda activate cdf_bubble_planning_control
 ```
 
 If using conda environment, you will additionally need to install OMPL depedencies: https://ompl.kavrakilab.org/installation.html
