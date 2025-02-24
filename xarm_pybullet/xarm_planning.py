@@ -505,31 +505,51 @@ class XArmSDFVisualizer:
                 self.env.close()
 
 if __name__ == "__main__":
-    # Example usage for comparison
-    goal_pos = torch.tensor([0.78, 0.24, 0.37], device='cuda')     
-
-    # env1 example goal pos: [0.7, 0.1, 0.6],  [0.2, 0.6, 0.6] , [0.22, 0.27, 0.66]   
-    # env2 example goal pos: [0.78, 0.24, 0.37]
-
-
-    seed = 10
-    visualizer = None
-
+    import argparse
+    
+    def parse_goal_list(goal_str):
+        """Convert string representation of list to float list"""
+        try:
+            # Remove brackets and split by comma
+            goal_str = goal_str.strip('[]')
+            return [float(x) for x in goal_str.split(',')]
+        except:
+            raise argparse.ArgumentTypeError("Goal must be a list of 3 floats: [x,y,z]")
+    
+    parser = argparse.ArgumentParser(description='xArm Planning Demo')
+    parser.add_argument('--goal', type=parse_goal_list, default=[0.78, 0.24, 0.37],
+                      help='Goal position as list [x,y,z]')
+    parser.add_argument('--planner', type=str, default='bubble',
+                      choices=['bubble', 'bubble_connect', 'sdf_rrt', 'cdf_rrt', 'lazy_rrt', 'rrt_connect'],
+                      help='Planner type')
+    parser.add_argument('--seed', type=int, default=10,
+                      help='Random seed')
+    parser.add_argument('--gui', type=str, default='True',
+                      choices=['True', 'False'],
+                      help='Enable PyBullet GUI')
+    parser.add_argument('--early_termination', type=str, default='True',
+                      choices=['True', 'False'],
+                      help='Stop planning after finding first valid path')
+    
+    args = parser.parse_args()
+    
+    # Validate goal length
+    if len(args.goal) != 3:
+        raise ValueError("Goal must contain exactly 3 values [x,y,z]")
+    
+    # Convert goal to tensor
+    goal_pos = torch.tensor(args.goal, device='cuda')
+    
     try:
-        # planner_type = 'bubble', 'bubble_connect', 'sdf_rrt', 'cdf_rrt'
-        visualizer = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble', 
-                                       seed=seed, use_pybullet_inverse=True, early_termination=True)  
+        visualizer = XArmSDFVisualizer(
+            goal_pos, 
+            use_gui=args.gui=='True', 
+            planner_type=args.planner,
+            seed=args.seed,
+            use_pybullet_inverse=True,
+            early_termination=args.early_termination=='True'
+        )
         
-        # visualizer.goal_configs = [np.array([-1.4397272, -1.8688867, -1.0261794,  1.4388353,  1.5402647,
-        #     2.8958786], dtype=np.float32), np.array([ 1.6531591, -0.7119475, -0.9487262, -1.5808885,  1.6559765,
-        #    -1.6541713], dtype=np.float32), np.array([-1.3883772, -1.7281208, -1.0457752,  1.5484365,  1.7190738,
-        #     2.7941952], dtype=np.float32), np.array([-1.5003192 , -1.982543  , -0.87110025,  1.6527996 ,  1.3998513 ,
-        #     2.8629906 ], dtype=np.float32), np.array([-1.5302505 ,  0.39160264,  1.570477  ,  1.411324  ,  1.4478607 ,
-        #    -1.922108  ], dtype=np.float32)]
-
-        # visualizer._found_goal_configs = True  # Set flag to skip goal config search
-
-        # single demo
         visualizer.run_demo(
             fps=20,
             execute_trajectory=True,
@@ -537,7 +557,6 @@ if __name__ == "__main__":
         )
     
     finally:
-        # Only try to clean up if we haven't already
         if visualizer is not None and hasattr(visualizer, 'env'):
             if p.isConnected():
                 p.disconnect()  

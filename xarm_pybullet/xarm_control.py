@@ -2,6 +2,7 @@ import pybullet as p
 import torch
 import numpy as np
 import imageio
+import argparse
 
 from xarm_planning import XArmSDFVisualizer
 from typing import List, Tuple
@@ -452,60 +453,78 @@ class XArmController:
         return goal_distances, np.array(executed_configs), is_safe
 
 if __name__ == "__main__":
-    # Example usage
-    goal_pos = torch.tensor([0.78, 0.24, 0.37], device='cuda')
+    def parse_goal_list(goal_str):
+        """Convert string representation of list to float list"""
+        try:
+            goal_str = goal_str.strip('[]')
+            return [float(x) for x in goal_str.split(',')]
+        except:
+            raise argparse.ArgumentTypeError("Goal must be a list of 3 floats: [x,y,z]")
+    
+    parser = argparse.ArgumentParser(description='xArm Control Demo')
 
     # example pos: [0.7, 0.1, 0.66], [0.25, 0.6, 0.6], [0.22, 0.27, 0.66]
-    planner_type = 'bubble'  # or other types
-
-    trajectory_whole = None
+    parser.add_argument('--goal', type=parse_goal_list, default=[0.78, 0.24, 0.37],
+                      help='Goal position as list [x,y,z]')
+    parser.add_argument('--planner', type=str, default='bubble',
+                      choices=['bubble', 'sdf_rrt', 'cdf_rrt', 'rrt_connect'],
+                      help='Planner type')
+    parser.add_argument('--controller', type=str, default='clf_dro_cbf',
+                      choices=['pd', 'clf_cbf', 'clf_dro_cbf'],
+                      help='Controller type')
+    parser.add_argument('--dynamic', type=str, default='True',
+                      choices=['True', 'False'],
+                      help='Enable dynamic obstacles')
+    parser.add_argument('--gui', type=str, default='True',
+                      choices=['True', 'False'],
+                      help='Enable PyBullet GUI')
+    parser.add_argument('--seed', type=int, default=10,
+                      help='Random seed')
+    parser.add_argument('--early_termination', type=str, default='True',
+                      choices=['True', 'False'],
+                      help='Stop planning after finding first valid path')
     
-    # Define cache file path
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    cache_dir = os.path.join(script_dir, 'trajectory_cache')
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(
-        cache_dir, 
-        f'traj_{planner_type}_goal_{goal_pos[0]:.2f}_{goal_pos[1]:.2f}_{goal_pos[2]:.2f}.pkl'
-    )
+    args = parser.parse_args()
     
-    # Try to load from cache first
-    if os.path.exists(cache_file):
-        print(f"Loading trajectory from cache: {cache_file}")
-        with open(cache_file, 'rb') as f:
-            trajectory_whole = pickle.load(f)
+    # Convert goal to tensor
+    goal_pos = torch.tensor(args.goal, device='cuda')
     
-    # If not in cache, plan new trajectory
-    if trajectory_whole is None:
-        print("Planning new trajectory...")
-        planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type='bubble', 
-                                       seed=10, use_pybullet_inverse=True, early_termination=False)  
-        trajectory_whole = planner.run_demo(execute_trajectory=False)
-
-        planner.env.close()
-
+    try:
+        # Initialize planner
+        planner = XArmSDFVisualizer(
+            goal_pos, 
+            use_gui=args.gui == 'True',
+            planner_type=args.planner,
+            seed=args.seed,
+            dynamic_obstacles=args.dynamic == 'True',
+            early_termination=args.early_termination == 'True'
+        )
         
-        # Save to cache if planning successful
+        # Plan trajectory
+        trajectory_whole = planner.run_demo(execute_trajectory=False)
+        
         if trajectory_whole is not None:
-            print(f"Saving trajectory to cache: {cache_file}")
-            with open(cache_file, 'wb') as f:
-                pickle.dump(trajectory_whole, f)
-    
-    if trajectory_whole is not None:
-        try:
-            # Initialize controller 
-            planner = XArmSDFVisualizer(goal_pos, use_gui=True, planner_type=planner_type, dynamic_obstacles=True)
-            controller = XArmController(planner, control_type='clf_dro_cbf')
+            # Initialize controller
+            controller = XArmController(
+                planner, 
+                control_type=args.controller
+            )
             
-            if planner_type == 'bubble':
-                print(f"Original trajectory length: {len(trajectory_whole['waypoints'])}")
-                distances, executed_configs, is_safe = controller.execute_trajectory(trajectory_whole, use_bezier=True, save_video=True)
+            # Execute trajectory
+            if args.planner == 'bubble':
+                distances, executed_configs, is_safe = controller.execute_trajectory(
+                    trajectory_whole, 
+                    use_bezier=True, 
+                    save_video=True
+                )
             else:
-                print(f"Original trajectory length: {len(trajectory_whole)}")
-                distances, executed_configs, is_safe = controller.execute_trajectory(trajectory_whole)
-        finally:
-            # Ensure proper cleanup of the controller's planner
-            if 'controller' in locals() and hasattr(controller, 'planner'):
-                controller.planner.env.close()
-    else:
-        print("Failed to generate trajectory!") 
+                distances, executed_configs, is_safe = controller.execute_trajectory(
+                    trajectory_whole
+                )
+        else:
+            print("Failed to generate trajectory!")
+            
+    finally:
+        # Ensure proper cleanup
+        if 'controller' in locals() and hasattr(controller, 'planner'):
+            controller.planner.env.close() 

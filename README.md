@@ -80,20 +80,34 @@ python 2Dexamples/main_control.py
 The default trained SDF/CDF models are saved in `xarm_pybullet/trained_models/`.
 
 ### Bubble-CDF Planning
-To run the bubble-CDF planning in PyBullet, run:
+To run the bubble-CDF planning in PyBullet:
 ```bash
+# Default settings
 python xarm_pybullet/xarm_planning.py
+
+# Custom settings
+python xarm_pybullet/xarm_planning.py --goal [0.7,0.1,0.6] --planner bubble --seed 42 --gui True --early_termination True
+
+# Available planners: bubble, bubble_connect, sdf_rrt, cdf_rrt, lazy_rrt, rrt_connect ...
+# early termination: Stop after first valid path or explore all goal configurations
 ```
 
-You can also specify the other planners to compare with, you can also change the goal position in the script.
 
 ### DRO-CBF Control
-To run the DRO-CBF control with dynamic obstacles, run:
+To run the DRO-CBF control:
 ```bash
+# Default settings (with dynamic obstacles)
 python xarm_pybullet/xarm_control.py
+
+# Custom settings
+python xarm_pybullet/xarm_control.py --goal [0.7,0.1,0.6] --planner bubble --controller clf_dro_cbf --dynamic True --gui True --early_termination True
+
+# Available options:
+# - planners: bubble, sdf_rrt, cdf_rrt, rrt_connect, lazy_rrt ...
+# - dynamic: Whether to use dynamic obstacles
+# - controllers: pd, clf_cbf, clf_dro_cbf
 ```
 
-Some baseline controllers are also implemented in `xarm_pybullet/xarm_control.py`, you can try them out by changing the `control_type` parameter.
 
 
 
