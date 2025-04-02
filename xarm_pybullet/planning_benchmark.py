@@ -39,7 +39,7 @@ def find_goal_configs(goal: torch.Tensor, seed: int) -> List[np.ndarray]:
     visualizer = XArmSDFVisualizer(
         goal,
         use_gui=False,
-        planner_type='bubble',
+        planner_type='cdf_rrt',
         seed=seed,
         use_pybullet_inverse=True
     )
@@ -50,7 +50,7 @@ def run_benchmark(num_trials: int = 10, base_seed: int = 42, use_profile: bool =
     profiler = cProfile.Profile() if use_profile else None
     
     # Define planners to test
-    planners = ['bubble'] #, ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect'], ['bubble', 'bubble_connect']
+    planners = ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect'] #, ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect'], ['bubble', 'bubble_connect']
     results = {planner: {
         'collision_checks': [],
         'path_lengths': [],
@@ -166,4 +166,4 @@ def run_benchmark(num_trials: int = 10, base_seed: int = 42, use_profile: bool =
     return results
 
 if __name__ == "__main__":
-    results = run_benchmark(num_trials=1, base_seed=5, use_profile=False) 
+    results = run_benchmark(num_trials=20, base_seed=5, use_profile=False) 

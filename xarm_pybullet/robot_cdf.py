@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 import torch
 import numpy as np
+import time
+from typing import List
 
 # Add project root to Python path
 project_root = Path(__file__).parent
@@ -120,6 +122,50 @@ class RobotCDF:
         except Exception as e:
             print(f"Gradient computation failed: {str(e)}")
 
+    def benchmark_inference_time(self, q_sizes: List[int], p_sizes: List[int], num_trials: int = 100) -> dict:
+        """
+        Benchmark inference time for different numbers of configurations and workspace points.
+        
+        Args:
+            q_sizes: List of different numbers of configurations to test
+            p_sizes: List of different numbers of workspace points to test
+            num_trials: Number of trials to average over
+        
+        Returns:
+            Dictionary containing timing results and statistics
+        """
+        results = {}
+        
+        for q_size in q_sizes:
+            for p_size in p_sizes:
+                # Generate random test data
+                joint_angles = torch.rand(q_size, 6, device=self.device) * 2 * np.pi - np.pi  # [-π, π]
+                points = torch.rand(q_size, p_size, 3, device=self.device) * 2 - 1  # [-1, 1]
+                
+                # Warm-up runs
+                for _ in range(10):
+                    _ = self.query_cdf(points, joint_angles)
+                
+                # Timing runs
+                torch.cuda.synchronize()  # Ensure GPU operations are completed
+                times = []
+                
+                for _ in range(num_trials):
+                    start = time.perf_counter()
+                    _ = self.query_cdf(points, joint_angles)
+                    torch.cuda.synchronize()
+                    end = time.perf_counter()
+                    times.append(end - start)
+                
+                # Calculate statistics
+                times = np.array(times)
+                results[(q_size, p_size)] = {
+                    'mean': np.mean(times) * 1000,  # Convert to milliseconds
+                    'std': np.std(times) * 1000
+                }
+        
+        return results
+
 if __name__ == "__main__":
     device = 'cuda'
     robot_cdf = RobotCDF(device)
@@ -157,4 +203,22 @@ if __name__ == "__main__":
         print(f"\nPoint {test_points[0,i].cpu().numpy()}:")
         print(f"CDF value: {cdf_values[0,i].item():.6f}")
         print(f"Gradient norm: {gradient_norms[0,i].item():.6f} (should be close to 1.0)")
-        print(f"Gradients: {gradients[0,i].detach().cpu().numpy()}") 
+        print(f"Gradients: {gradients[0,i].detach().cpu().numpy()}")
+    
+    # Add benchmarking
+    print("\n" + "="*50)
+    print("Running inference time benchmark...")
+    print("="*50)
+    
+    # Define test sizes
+    q_sizes = [1, 10, 100]
+    p_sizes = [1, 10, 100, 1000, 10000]
+    
+    # Run benchmark
+    results = robot_cdf.benchmark_inference_time(q_sizes, p_sizes)
+    
+    # Print results in a simple format
+    print("\nInference Time Results (milliseconds):")
+    print("Format: q_size (6D configs), p_size (3D points): mean ± std")
+    for (q_size, p_size), stats in sorted(results.items()):
+        print(f"q={q_size}, p={p_size}: {stats['mean']:.3f} ± {stats['std']:.3f} ms") 

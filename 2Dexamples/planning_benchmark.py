@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import pandas as pd
 from tqdm import tqdm
+import argparse
 
 from utils_env import create_obstacles
 from robot_cdf import RobotCDF
@@ -14,14 +15,27 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-# Import based on which planner we're testing
-PLANNER_TYPE = "lazy_rrt"  # Change this to "rrt" for RRT planners
-if PLANNER_TYPE == "bubble":
-    from planner.bubble_planner import BubblePlanner
-else:
-    from planner.rrt_ompl import OMPLRRTPlanner
 
-def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination: bool = True, one_goal: bool = False):
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Planning Benchmark')
+    parser.add_argument('--planner_type', type=str, default='rrt',
+                      choices=['rrt', 'bubble'],
+                      help='Type of planner to use (default: rrt)')
+    parser.add_argument('--num_envs', type=int, default=100,
+                      help='Number of environments to test (default: 100)')
+    parser.add_argument('--seed', type=int, default=2,
+                      help='Random seed (default: 2)')
+    parser.add_argument('--early_termination', type=bool, default=True,
+                      help='Whether to terminate early when solution is found (default: True)')
+    parser.add_argument('--one_goal', type=bool, default=False,
+                      help='Whether to use single goal configuration (default: False)')
+    return parser.parse_args()
+
+
+def run_planning_benchmark(planner_type: str = "rrt", num_envs: int = 100, 
+                         seed: int = 3, early_termination: bool = True, 
+                         one_goal: bool = False):
     """Run planning benchmark across multiple environments and planners."""
     
     # Set random seeds
@@ -55,7 +69,7 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
     # Initialize robot models
     robot_cdf = RobotCDF(device=device)
     # Initialize SDF model for RRT-based planners
-    robot_sdf = RobotSDF(device=device) if PLANNER_TYPE != "bubble" else None
+    robot_sdf = RobotSDF(device=device) if planner_type != "bubble" else None
     
     # Setup joint limits
     initial_config = np.array([0., 0.], dtype=np.float32)
@@ -65,7 +79,8 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
     )
     
     # Setup planners based on type
-    if PLANNER_TYPE == "bubble":
+    if planner_type == "bubble":
+        from planner.bubble_planner import BubblePlanner
         planners = {
             'bubble': BubblePlanner(
                 robot_cdf, joint_limits, max_samples=300, batch_size=2,
@@ -77,6 +92,7 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
             )
         }
     else:  # rrt
+        from planner.rrt_ompl import OMPLRRTPlanner
         planners = {
             'cdf_rrt': OMPLRRTPlanner(
                 robot_sdf=robot_sdf,
@@ -150,7 +166,7 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
         for planner_name, planner in planners.items():
             try:
                 # Plan with early termination (single goal case)
-                if PLANNER_TYPE == "bubble":
+                if planner_type == "bubble":
                     result = planner.plan(
                         initial_config, goal_configs, obstacle_points
                     )
@@ -206,14 +222,21 @@ def run_planning_benchmark(num_envs: int = 100, seed: int = 3, early_termination
         'success': 'mean'
     }).round(2)
     
-    print(f"\n{PLANNER_TYPE.upper()} Planning Statistics:")
+    print(f"\n{planner_type.upper()} Planning Statistics:")
     print(stats)
     
-    # Save results
-    df.to_csv(f'{PLANNER_TYPE}_planning_results.csv', index=False)
-    stats.to_csv(f'{PLANNER_TYPE}_planning_stats.csv')
+    # Save results (commented out)
+    # df.to_csv(f'{planner_type}_planning_results.csv', index=False)
+    # stats.to_csv(f'{planner_type}_planning_stats.csv')
     
     return df, stats
 
 if __name__ == "__main__":
-    df, stats = run_planning_benchmark(num_envs=100, seed=2, early_termination=True, one_goal=False)
+    args = parse_args()
+    df, stats = run_planning_benchmark(
+        planner_type=args.planner_type,
+        num_envs=args.num_envs,
+        seed=args.seed,
+        early_termination=args.early_termination,
+        one_goal=args.one_goal
+    )

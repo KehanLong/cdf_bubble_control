@@ -1,5 +1,8 @@
 FROM nvidia/cuda:11.8.0-base-ubuntu22.04
 
+# Avoid timezone prompt during installation
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install system dependencies
 RUN apt update && apt install -y --no-install-recommends \
     build-essential \
@@ -33,6 +36,8 @@ RUN pip3 install --no-cache-dir \
     scikit-learn==1.5.2 \
     python-igraph==0.10.8 \
     opencv-python==4.9.0.80 \
+    pandas \
+    tqdm \
     --extra-index-url https://download.pytorch.org/whl/cu118
 
 # Install OMPL dependencies and build tools
