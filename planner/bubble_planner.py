@@ -372,18 +372,18 @@ class BubblePlanner:
                 prob = cvxpy.Problem(cvxpy.Minimize(cost), constr_bps)
                 
                 # Print problem details
-                print(f"Number of variables: {sum(v.size for v in prob.variables())}")
-                print(f"Number of constraints: {len(prob.constraints)}")
+                # print(f"Number of variables: {sum(v.size for v in prob.variables())}")
+                # print(f"Number of constraints: {len(prob.constraints)}")
                 
                 solve_start = time.time()
                 prob.solve()
-                print(f"CVXPY post optimization Solve time: {time.time() - solve_start:.3f}s")
+                # print(f"CVXPY post optimization Solve time: {time.time() - solve_start:.3f}s")
                 
                 # Generate final trajectory
                 times = np.linspace(0, 1.0, 50)
                 trajectory = np.vstack([bp.query(times).value for bp in bps])
                 
-                print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
+                #print(f"Planning complete! Generated trajectory with {len(trajectory)} waypoints")
                 
                 # Include all operations in total planning time
                 total_planning_time = time.time() - total_start_time

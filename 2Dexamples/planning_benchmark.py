@@ -83,11 +83,11 @@ def run_planning_benchmark(planner_type: str = "rrt", num_envs: int = 100,
         from planner.bubble_planner import BubblePlanner
         planners = {
             'bubble': BubblePlanner(
-                robot_cdf, joint_limits, max_samples=300, batch_size=2,
+                robot_cdf, joint_limits, max_samples=300, batch_size=5,
                 device=device, seed=seed, early_termination=early_termination
             ),
             'bubble_connect': BubblePlanner(
-                robot_cdf, joint_limits, max_samples=300, batch_size=2,
+                robot_cdf, joint_limits, max_samples=300, batch_size=5,
                 device=device, seed=seed, early_termination=early_termination, planner_type='bubble_connect'
             )
         }

@@ -61,6 +61,11 @@ To run the bubble-CDF planning, run the following command:
 python 2Dexamples/main_planning.py
 ```
 
+For a gif illustration of the bubble-CDF planner, run: 
+```bash
+python 2Dexamples/main_planning_gif.py
+```
+
 Baseline Comparison:
 To compare with baselines using OMPL's planners, run the following command:
 ```bash

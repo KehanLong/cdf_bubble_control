@@ -72,7 +72,7 @@ def plan_and_visualize(robot_cdf, robot_sdf, obstacles, initial_config, goal_con
         if planner_type in ['bubble', 'bubble_connect']:
             # Use bubble planner
             planner = BubblePlanner(
-                robot_cdf, joint_limits, max_samples=max_bubble_samples, batch_size=2,
+                robot_cdf, joint_limits, max_samples=max_bubble_samples, batch_size=5,
                 device=robot_cdf.device, seed=seed, planner_type=planner_type, 
                 early_termination=early_termination,
                 safety_margin=safety_margin
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         result = plan_and_visualize(
             robot_cdf, robot_sdf, obstacles, initial_config, goal_configs, 
             max_bubble_samples=150, seed=seed, early_termination=True, 
-            planner_type=planner, visualize=False, use_profile=True
+            planner_type=planner, visualize=True, use_profile=False
         )
 
 

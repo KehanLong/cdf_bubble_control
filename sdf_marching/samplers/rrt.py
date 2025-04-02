@@ -225,7 +225,7 @@ def get_rapidly_exploring(
                         return overlaps_graph, (centers[:n_circles], radii[:n_circles]), num_iterations
 
             # Print progress
-            print(f"Circles: {n_circles} at iteration {num_iterations}")
+            # print(f"Circles: {n_circles} at iteration {num_iterations}")
 
         num_iterations += 1
 
@@ -540,9 +540,9 @@ def get_rapidly_exploring_connect(
                             )
                             return overlaps_graph, (all_centers, all_radii), num_iterations
 
-            print(f"Start circles: {n_start_circles}, " + 
-                  ", ".join([f"Goal {i} circles: {n}" for i, n in enumerate(n_goal_circles)]) +
-                  f", Iteration: {num_iterations}")
+            # print(f"Start circles: {n_start_circles}, " + 
+            #       ", ".join([f"Goal {i} circles: {n}" for i, n in enumerate(n_goal_circles)]) +
+            #       f", Iteration: {num_iterations}")
 
         # Check for stagnation before processing new iteration
         current_total_circles = n_start_circles + sum(n_goal_circles)
