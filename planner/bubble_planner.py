@@ -73,8 +73,23 @@ def create_multigoal_sampler(mins, maxs, goal_configs, p0=0.2, rng=None):
     return sample_fn
 
 class BubblePlanner:
-    def __init__(self, robot_cdf, joint_limits, max_samples=5E4, batch_size=50, device='cuda', seed=42, planner_type='bubble', early_termination=True, safety_margin=0.1):
-        """Initialize the bubble planner using CDF for collision checking"""
+    def __init__(self, robot_cdf, joint_limits, self_collision_cdf=None, max_samples=5E4, batch_size=50, 
+                 device='cuda', seed=42, planner_type='bubble', early_termination=True, safety_margin=0.1):
+        """
+        Initialize the bubble planner using CDF for collision checking
+        
+        Args:
+            robot_cdf: Workspace CDF for robot-environment collisions
+            self_collision_cdf: Optional self-collision CDF (default: None)
+            joint_limits: Joint limits for the robot
+            max_samples: Maximum number of samples to generate (default: 5E4)
+            batch_size: Batch size for sampling (default: 50)
+            device: Device to use for computation (default: 'cuda')
+            seed: Random seed for reproducibility
+            planner_type: Planner type ('bubble' or 'bubble_connect')
+            early_termination: Whether to terminate early if a goal is reached
+            safety_margin: Safety margin for collision checking
+        """
         self.random_seed = seed
         np.random.seed(seed)
 
@@ -90,6 +105,7 @@ class BubblePlanner:
         
         # Store robot info
         self.robot_cdf = robot_cdf
+        self.self_collision_cdf = self_collision_cdf  # Can be None
         self.joint_limits = (
             np.asarray(joint_limits[0], dtype=np.float32),
             np.asarray(joint_limits[1], dtype=np.float32)
@@ -116,36 +132,40 @@ class BubblePlanner:
         self.planner_type = planner_type
 
     def query_cdf(self, config: np.ndarray, obstacle_points: torch.Tensor) -> float:
-        """Query CDF value for a given configuration"""
-        self.cdf_query_count += 1  # Count each CDF query
-        # Convert config to tensor and ensure [B, 6] shape
+        """
+        Query CDF value - workspace CDF and self-collision CDF (if available)
+        """
+        self.cdf_query_count += 1
+
+        # Query workspace CDF
         config_tensor = torch.tensor(config, device=self.device, dtype=torch.float32)
         if config_tensor.dim() == 1:
-            config_tensor = config_tensor.unsqueeze(0)  # [1, 6]
+            config_tensor = config_tensor.unsqueeze(0)
         
-        # Ensure points are [B, N, 3]
         if obstacle_points.dim() == 2:
-            obstacle_points = obstacle_points.unsqueeze(0)  # [1, N, 3]
+            obstacle_points = obstacle_points.unsqueeze(0)
         
-        
-        # Query CDF model
-        cdf_values = self.robot_cdf.query_cdf(
-            points=obstacle_points,      # [B, N, 3]
-            joint_angles=config_tensor,  # [B, 6]
+        workspace_cdf = self.robot_cdf.query_cdf(
+            points=obstacle_points,
+            joint_angles=config_tensor,
             return_gradients=False
-        )
-        
-        min_cdf = cdf_values.min().detach().cpu().numpy() - self.safety_margin + 0.1
+        ).min().detach().cpu().numpy()
 
-        # For 2d: 
-        # min_cdf = max(cdf_values.min().detach().cpu().numpy() - 0.1, 0.05)
-    
-        # if using sdf, use this
-        # min_cdf = max(min_cdf * 5., 0.05)   # 0.1 for safety
+        # Query self-collision CDF if available
+        if self.self_collision_cdf is not None:
+            self_collision_cdf = self.self_collision_cdf.query_cdf(
+                config_tensor,
+                return_gradients=False
+            ).min().detach().cpu().numpy()
+            
+            # Take minimum of both CDFs
+            min_cdf = min(workspace_cdf - self.safety_margin, self_collision_cdf)
+        else:
+            # Only use workspace CDF if self-collision CDF is not available
+            min_cdf = workspace_cdf - self.safety_margin
 
-        # for xarm, use this
-        # min_cdf = max(min_cdf - 0.05, 0.05)   # 0.1 for safety
-
+        # Ensure minimum radius for numerical stability
+        min_cdf = max(min_cdf, 0.05)
         
         return min_cdf
 

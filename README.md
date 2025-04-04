@@ -91,7 +91,7 @@ To run the bubble-CDF planning in PyBullet:
 python xarm_pybullet/xarm_planning.py
 
 # Custom settings
-python xarm_pybullet/xarm_planning.py --goal [0.7,0.1,0.6] --planner bubble --seed 42 --gui True --early_termination True
+python xarm_pybullet/xarm_planning.py --goal [0.8,0.1,0.68] --planner bubble --seed 42 --gui True --early_termination True
 
 # Available planners: bubble, bubble_connect, sdf_rrt, cdf_rrt, lazy_rrt, rrt_connect ...
 # early termination: Stop after first valid path or explore all goal configurations

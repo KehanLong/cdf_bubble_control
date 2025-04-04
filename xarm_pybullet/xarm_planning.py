@@ -8,6 +8,7 @@ import os
 from xarm_sim_env import XArmEnvironment
 from robot_sdf import RobotSDF
 from robot_cdf import RobotCDF
+from self_collision_cdf import SelfCollisionCDF
 
 # Add project root to Python path
 import sys
@@ -101,10 +102,14 @@ class XArmSDFVisualizer:
         self.use_pybullet_inverse = use_pybullet_inverse  # Default to random sampling
         self.early_termination = early_termination
         
-        # Initialize robot FK and SDF model
+        # Initialize robot FK, SDF, CDF models
         self.robot_fk = XArmFK(device=self.device)
         self.robot_sdf = RobotSDF(device=self.device)
         self.robot_cdf = RobotCDF(device=self.device)
+        
+        # Initialize self-collision CDF
+        self.self_collision_cdf = SelfCollisionCDF(device=self.device)
+        
         # Store goal pos (in task space)
         self.goal = ee_goal + self.base_pos
         self.initial_horizon = initial_horizon
@@ -135,17 +140,18 @@ class XArmSDFVisualizer:
                 seed=seed
             )
         elif planner_type in ['bubble', 'bubble_connect']:
-            # Initialize Bubble Planner with seed
+            # Initialize Bubble Planner with both CDFs
             self.bubble_planner = BubblePlanner(
                 robot_cdf=self.robot_cdf,
+                self_collision_cdf=self.self_collision_cdf,
                 joint_limits=(
                     self.robot_fk.joint_limits[:, 0].cpu().numpy(),
                     self.robot_fk.joint_limits[:, 1].cpu().numpy()
                 ),
                 device=self.device,
-                max_samples=1e4,                # max number of bubbles in the graph
-                seed=seed,                      # Pass seed to planner
-                planner_type=planner_type,      # planner type option: 'bubble' or 'bubble_connect'
+                max_samples=1e4,
+                seed=seed,
+                planner_type=planner_type,
                 early_termination=self.early_termination
             )
         else:
@@ -449,6 +455,7 @@ class XArmSDFVisualizer:
                     goal_dist = torch.norm(self.goal - current_ee_pos.squeeze())
                     goal_distances.append(goal_dist.detach().cpu().numpy())
                     
+                    # Get workspace CDF (SDF)
                     sdf_values = self.robot_sdf.query_sdf(
                         points=self.points_robot.unsqueeze(0),
                         joint_angles=next_config.unsqueeze(0),
@@ -457,10 +464,15 @@ class XArmSDFVisualizer:
                     min_sdf = sdf_values.min()
                     sdf_distances.append(min_sdf.detach().cpu().numpy())
                     
+                    # Get self-collision CDF - FIX: ensure next_config is a tensor with correct shape
+                    next_config_tensor = next_config.unsqueeze(0) if next_config.dim() == 1 else next_config
+                    min_self_cdf = self.self_collision_cdf.query_cdf(next_config_tensor, return_gradients=False).min().detach().cpu().numpy()
+                    
                     if traj_idx % 10 == 0:
                         print(f"Waypoint {traj_idx}/{len(trajectory)}")
                         print(f"Distance to goal: {goal_dist.item():.4f}")
                         print(f"Minimum SDF value: {min_sdf.item():.4f}")
+                        print(f"Minimum self-collision CDF: {min_self_cdf:.4f}")
                         print("---")
                     
                     if self.use_gui:

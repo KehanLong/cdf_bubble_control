@@ -52,8 +52,16 @@ def create_cdf_field(robot_cdf, obstacle_points, resolution=100):
 def create_planning_animation(robot_cdf, initial_config, goal_configs, 
                             obstacle_points, bubbles, trajectory, output_path, resolution=50, batch_size=5):
     """Create animated GIF of the planning process"""
-    # Create figure and compute CDF field once
-    fig, ax = plt.subplots(figsize=(8, 7))
+    # Create figure with same size as the video
+    fig = plt.figure(figsize=(10, 10))
+    
+    # Create axis with C-space limits (-π to π)
+    ax = fig.add_subplot(111)
+    ax.set_xlim(-np.pi, np.pi)
+    ax.set_ylim(-np.pi, np.pi)
+    ax.set_aspect('equal')
+    
+    # Compute CDF field once
     cdf_field = create_cdf_field(robot_cdf, obstacle_points, resolution)
     
     # Calculate number of frames based on batch size
@@ -62,6 +70,11 @@ def create_planning_animation(robot_cdf, initial_config, goal_configs,
     
     def update(frame):
         ax.clear()
+        
+        # Reset axis limits to C-space bounds
+        ax.set_xlim(-np.pi, np.pi)
+        ax.set_ylim(-np.pi, np.pi)
+        ax.set_aspect('equal')
         
         # Plot CDF field
         im = ax.imshow(cdf_field, extent=[-np.pi, np.pi, -np.pi, np.pi], 
@@ -112,34 +125,28 @@ def create_planning_animation(robot_cdf, initial_config, goal_configs,
             ax.scatter(goal[0], goal[1], 
                       color='r', marker=marker, s=150, label=f'Goal {i+1}')
         
-        ax.set_xlabel('θ₁', fontsize=20)
-        ax.set_ylabel('θ₂', fontsize=20)
-        ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.legend(fontsize=20, loc='lower left')
-        
-        # Update title based on frame
-        if frame < num_batches:
-            current_bubbles = min(batch_size * (frame + 1), num_bubbles)
-            ax.set_title(f'Planning Step {frame+1}/{num_batches}\nBubbles: {current_bubbles}/{num_bubbles}', 
-                        fontsize=20)
-        else:
-            ax.set_title('Final Path', fontsize=20)
+        # Match video font sizes
+        ax.set_xlabel('θ₁', fontsize=28)
+        ax.set_ylabel('θ₂', fontsize=28)
+        ax.tick_params(axis='both', which='major', labelsize=26)
+        ax.legend(fontsize=24, loc='lower left')
         
         return [im]
     
-    # Create animation with an extra frame at the end
+    # Create animation
     anim = FuncAnimation(fig, update, 
-                        frames=num_batches + 5,  # Add extra frames for final state
+                        frames=num_batches + 5,
                         interval=200, blit=True)
     
     # Save as GIF
+    plt.tight_layout()
     writer = PillowWriter(fps=5)
-    anim.save(output_path, writer=writer)
+    anim.save(output_path, writer=writer, dpi=300)
     plt.close()
 
 def main():
     # Set random seeds
-    seed = 42
+    seed = 5
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -173,7 +180,7 @@ def main():
         device=device,
         seed=seed,
         planner_type='bubble',
-        early_termination=True,
+        early_termination=False,
         safety_margin=0.1
     )
     

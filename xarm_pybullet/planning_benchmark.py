@@ -15,6 +15,16 @@ class PlanningProgress:
     path_lengths: List[float]
     timestamps: List[float]  # Optional: if we want to show time progression
 
+@dataclass
+class PlanningMetrics:
+    success: bool
+    num_collision_checks: int
+    path_length: float
+    num_samples: int
+    planning_time: float
+    min_workspace_cdf: float
+    min_self_collision_cdf: float
+
 def generate_random_goals(num_goals: int, seed: int = 42) -> List[torch.Tensor]:
     """Generate random reachable goal positions for the xArm"""
     np.random.seed(seed)
@@ -50,11 +60,13 @@ def run_benchmark(num_trials: int = 10, base_seed: int = 42, use_profile: bool =
     profiler = cProfile.Profile() if use_profile else None
     
     # Define planners to test
-    planners = ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect'] #, ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect'], ['bubble', 'bubble_connect']
+    planners = ['bubble'] #, ['cdf_rrt', 'sdf_rrt', 'lazy_rrt', 'rrt_connect'], ['bubble', 'bubble_connect']
     results = {planner: {
         'collision_checks': [],
         'path_lengths': [],
         'planning_times': [],
+        'min_workspace_cdfs': [],
+        'min_self_collision_cdfs': [],
         'successes': 0
     } for planner in planners}
     
@@ -119,6 +131,30 @@ def run_benchmark(num_trials: int = 10, base_seed: int = 42, use_profile: bool =
                             results[planner]['collision_checks'].append(metrics.num_collision_checks)
                             results[planner]['path_lengths'].append(metrics.path_length)
                             results[planner]['planning_times'].append(metrics.planning_time)
+                            
+                            # Add tracking of minimum CDF values along path
+                            if 'waypoints' in result:
+                                waypoints = result['waypoints']
+                                min_workspace_cdf = float('inf')
+                                min_self_collision_cdf = float('inf')
+                                
+                                for config in waypoints:
+                                    # Check workspace CDF
+                                    workspace_cdf = visualizer.robot_cdf.query_cdf(
+                                        points=visualizer.points_robot.unsqueeze(0),
+                                        joint_angles=torch.tensor(config, device=visualizer.device).unsqueeze(0),
+                                        return_gradients=False
+                                    ).min().item()
+                                    
+                                    # Check self-collision CDF
+                                    self_collision_cdf = visualizer.self_collision_cdf.get_cdf(config)
+                                    
+                                    min_workspace_cdf = min(min_workspace_cdf, workspace_cdf)
+                                    min_self_collision_cdf = min(min_self_collision_cdf, self_collision_cdf)
+                                
+                                results[planner]['min_workspace_cdfs'].append(min_workspace_cdf)
+                                results[planner]['min_self_collision_cdfs'].append(min_self_collision_cdf)
+                            
                             results[planner]['successes'] += 1
                             print(f"Success - Collision checks: {metrics.num_collision_checks}")
                             print(f"Path length: {metrics.path_length:.3f}")
@@ -157,6 +193,8 @@ def run_benchmark(num_trials: int = 10, base_seed: int = 42, use_profile: bool =
             print(f"Collision Checks: {np.mean(data['collision_checks']):.1f} ± {np.std(data['collision_checks']):.1f}")
             print(f"Path Length: {np.mean(data['path_lengths']):.3f} ± {np.std(data['path_lengths']):.3f}")
             print(f"Planning Time: {np.mean(data['planning_times']):.3f}s ± {np.std(data['planning_times']):.3f}s")
+            print(f"Min Workspace CDF: {np.mean(data['min_workspace_cdfs']):.3f} ± {np.std(data['min_workspace_cdfs']):.3f}")
+            print(f"Min Self-collision CDF: {np.mean(data['min_self_collision_cdfs']):.3f} ± {np.std(data['min_self_collision_cdfs']):.3f}")
     
     # Save results
     Path("benchmark_results").mkdir(exist_ok=True)
