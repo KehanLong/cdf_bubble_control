@@ -79,31 +79,64 @@ class SelfCollisionCDF:
         
         return cdf_values
 
-    def test_differentiability(self):
-        """Test if the model is differentiable and check eikonal constraint"""
+    def test_differentiability(self, epsilon=1e-4):
+        """
+        Test if the model is differentiable and check eikonal constraint
+        Also validates gradients using finite differences
+        
+        Args:
+            epsilon: Step size for finite difference computation
+        """
         # Create test inputs
         joint_angles = torch.zeros(5, 6, device=self.device, requires_grad=True)
         
-        # Get CDF values and gradients
-        cdf_values, gradients = self.query_cdf(joint_angles, return_gradients=True)
+        # Get CDF values and analytical gradients
+        cdf_values, analytical_gradients = self.query_cdf(joint_angles, return_gradients=True)
+        
+        # Compute finite difference gradients
+        finite_diff_gradients = torch.zeros_like(analytical_gradients)
+        
+        with torch.no_grad():
+            for b in range(len(joint_angles)):
+                for j in range(6):  # 6 joints
+                    # Create positive and negative perturbations
+                    pos_perturb = joint_angles[b].clone()
+                    neg_perturb = joint_angles[b].clone()
+                    
+                    pos_perturb[j] += epsilon
+                    neg_perturb[j] -= epsilon
+                    
+                    # Query CDF for perturbed configurations
+                    pos_value = self.query_cdf(pos_perturb.unsqueeze(0))
+                    neg_value = self.query_cdf(neg_perturb.unsqueeze(0))
+                    
+                    # Central difference
+                    finite_diff_gradients[b, j] = (pos_value - neg_value) / (2 * epsilon)
+        
+        # Compare gradients
+        grad_diff = torch.norm(analytical_gradients - finite_diff_gradients, dim=-1)
+        mean_diff = grad_diff.mean().item()
+        max_diff = grad_diff.max().item()
+        
+        print("\nGradient Validation:")
+        print(f"Mean difference between analytical and finite diff: {mean_diff:.6f}")
+        print(f"Max difference between analytical and finite diff: {max_diff:.6f}")
+        
+        # Example comparison for first configuration
+        print("\nDetailed comparison for first configuration:")
+        print("Joint | Analytical | Finite Diff | Difference")
+        print("-" * 50)
+        for j in range(6):
+            print(f"{j:5d} | {analytical_gradients[0,j]:10.6f} | {finite_diff_gradients[0,j]:10.6f} | {abs(analytical_gradients[0,j] - finite_diff_gradients[0,j]):10.6f}")
         
         # Check gradient norms (eikonal constraint)
-        gradient_norms = torch.norm(gradients, dim=-1)  # [B]
+        gradient_norms = torch.norm(analytical_gradients, dim=-1)
         mean_norm = gradient_norms.mean().item()
         norm_deviation = (gradient_norms - 1.0).abs().mean().item()
         
         print("\nEikonal Constraint Check:")
         print(f"Mean gradient norm: {mean_norm:.4f} (should be close to 1.0)")
         print(f"Mean deviation from 1.0: {norm_deviation:.4f} (should be close to 0.0)")
-        
-        # Test differentiability
-        try:
-            loss = cdf_values.sum()
-            loss.backward()
-            print("\nGradient computation successful!")
-            print(f"Example gradient:\n{joint_angles.grad[0]}")
-        except Exception as e:
-            print(f"Gradient computation failed: {str(e)}")
 
     def benchmark_inference_time(self, batch_sizes, num_trials=100):
         """Benchmark inference time for different batch sizes"""
@@ -162,14 +195,14 @@ if __name__ == "__main__":
         print(f"Gradient (direction to move away from collision):\n{gradients[i].detach().cpu().numpy()}")
     
     # Test differentiability
-    self_collision_cdf.test_differentiability()
+    # self_collision_cdf.test_differentiability()
     
     # Benchmark inference time
-    # print("\nRunning inference time benchmark...")
-    # batch_sizes = [1, 10, 100, 1000, 10000]
-    # results = self_collision_cdf.benchmark_inference_time(batch_sizes)
+    print("\nRunning inference time benchmark...")
+    batch_sizes = [1, 10, 100, 1000, 10000]
+    results = self_collision_cdf.benchmark_inference_time(batch_sizes)
     
-    # print("\nInference Time Results (milliseconds):")
-    # print("Format: batch_size (6D configs): mean ± std")
-    # for batch_size, stats in sorted(results.items()):
-    #     print(f"batch={batch_size}: {stats['mean']:.3f} ± {stats['std']:.3f} ms") 
+    print("\nInference Time Results (milliseconds):")
+    print("Format: batch_size (6D configs): mean ± std")
+    for batch_size, stats in sorted(results.items()):
+        print(f"batch={batch_size}: {stats['mean']:.3f} ± {stats['std']:.3f} ms") 
