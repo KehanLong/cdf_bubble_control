@@ -1,6 +1,7 @@
 Neural Configuration-Space Barriers for Manipulation Planning and Control [[Paper]](https://www.arxiv.org/abs/2503.04929)
 ===========================================
 
+check correctness
 
 This repository contains the official implementation for the paper "Neural Configuration-Space Barriers for Manipulation Planning and Control".
 
