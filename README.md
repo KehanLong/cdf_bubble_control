@@ -1,4 +1,4 @@
-Neural Configuration-Space Barriers for Manipulation Planning and Control [[Paper]](https://arxiv.org/)
+Neural Configuration-Space Barriers for Manipulation Planning and Control [[Paper]](https://www.arxiv.org/abs/2503.04929)
 ===========================================
 
 
@@ -6,14 +6,20 @@ This repository contains the official implementation for the paper "Neural Confi
 
 If you find our work useful, please consider citing our paper:
 ```
+@article{long2025neural_cdf,
+  title={Neural Configuration-Space Barriers for Manipulation Planning and Control},
+  author={Long, Kehan and Lee, Ki Myung Brian and Raicevic, Nikola and Attasseri, Niyas and Leok, Melvin and Atanasov, Nikolay},
+  journal={arXiv preprint arXiv:2503.04929},
+  year={2025}
+}
 
 ``` 
 
 ## 🚀 Quick Start
 Clone the repository: 
 ```bash
-git clone <repository_url>
-cd <repository_name>
+git clone https://github.com/KehanLong/cdf_bubble_control.git
+cd cdf_bubble_control
 ```
 
 ## 📦 Dependencies
