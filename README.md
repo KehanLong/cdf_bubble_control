@@ -12,7 +12,6 @@ If you find our work useful, please consider citing our paper:
   journal={arXiv preprint arXiv:2503.04929},
   year={2025}
 }
-
 ``` 
 
 ## 🚀 Quick Start
